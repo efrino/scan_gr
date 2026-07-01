@@ -538,14 +538,14 @@ class _PendingBanner extends StatelessWidget {
           ...visibleItems.asMap().entries.map((entry) {
             final idx = entry.key;
             final item = entry.value;
-            final hasKanban = item['has_kanban_data'] == true;
-            final title = hasKanban
+            final hasLabelbox = item['has_labelbox_data'] == true;
+            final title = hasLabelbox
                 ? (item['material']?.toString() ?? item['barcode']?.toString() ?? '-')
                 : (item['barcode']?.toString() ?? '-');
-            final subtitle = hasKanban
+            final subtitle = hasLabelbox
                 ? (item['id_box_label']?.toString() ?? item['barcode']?.toString() ?? '')
                 : 'Data belum diambil dari server';
-            final qty = hasKanban ? item['qty']?.toString() ?? item['quantity']?.toString() : null;
+            final qty = hasLabelbox ? item['qty']?.toString() ?? item['quantity']?.toString() : null;
             final cachedAt = _fmtCachedAt(item['cached_at']);
             final isLast = idx == visibleItems.length - 1 && extra == 0;
 
@@ -596,7 +596,7 @@ class _PendingBanner extends StatelessWidget {
                                 subtitle,
                                 style: TextStyle(
                                   fontSize: 10,
-                                  color: hasKanban
+                                  color: hasLabelbox
                                       ? Colors.grey.shade500
                                       : Colors.orange.shade700,
                                 ),

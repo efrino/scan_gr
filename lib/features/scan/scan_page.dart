@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/constants/api_constants.dart';
@@ -47,18 +48,18 @@ class _ScanPageState extends State<ScanPage> {
     super.dispose();
   }
 
-  Future<void> fetchKanban(String code) async {
+  Future<void> fetchLabelbox(String code) async {
     setState(() => _isLoading = true);
     final prefs = await SharedPreferences.getInstance();
     final nik = prefs.getString('nik') ?? prefs.getString('email') ?? '';
 
     final barcode = code.trim();
-    debugPrint('[ScanPage] fetchKanban barcode=$barcode | nik=$nik');
+    debugPrint('[ScanPage] fetchLabelbox barcode=$barcode | nik=$nik');
 
     // ── ONLINE DULU: coba ambil data dari server ──────────────────────────
     try {
       final uri = Uri.parse(
-        '${ApiConstants.baseUrl}/scan/get-kanban',
+        '${ApiConstants.baseUrl}/scan/get-labelbox',
       ).replace(queryParameters: {'barcode': barcode});
 
       debugPrint('[ScanPage] GET → $uri');
@@ -69,13 +70,11 @@ class _ScanPageState extends State<ScanPage> {
       debugPrint('[ScanPage]   body: ${response.body}');
 
       final data = jsonDecode(response.body);
-      if (data['status'] == true &&
-          data['data'] is List &&
-          (data['data'] as List).isNotEmpty) {
-        final kanbanData = data['data'][0] as Map<String, dynamic>;
+      final labelboxData = _extractLabelboxData(data['data']);
+      if (data['status'] == true && labelboxData != null) {
         final isScanned =
-            kanbanData['is_scanned']?.toString().toUpperCase() == 'Y';
-        final qty = kanbanData['quantity']?.toString() ?? '';
+            labelboxData['is_scanned']?.toString().toUpperCase() == 'Y';
+        final qty = labelboxData['quantity']?.toString() ?? '';
 
         if (isScanned) {
           setState(() => _isLoading = false);
@@ -88,17 +87,21 @@ class _ScanPageState extends State<ScanPage> {
         }
 
         // Langsung POST
-        final result = await submitKanban(
+        final result = await submitLabelbox(
           barcode: barcode,
           nik: nik,
           qty: qty,
-          kanbanData: kanbanData,
+          labelboxData: labelboxData,
         );
 
         setState(() => _isLoading = false);
 
         if (result.isSuccess) {
-          _showSnackbar('Berhasil terscan', color: Colors.green);
+          await _showSuccessModal(
+            title: 'Berhasil Terscan',
+            material: labelboxData['material']?.toString(),
+            qty: qty,
+          );
         } else {
           final isOffline =
               result.message.toLowerCase().contains('lokal') ||
@@ -114,7 +117,7 @@ class _ScanPageState extends State<ScanPage> {
       } else {
         setState(() => _isLoading = false);
         final msg = data['message'] as String? ?? 'Data tidak ditemukan';
-        debugPrint('[ScanPage] ✗ get-kanban gagal: $msg');
+        debugPrint('[ScanPage] ✗ get-labelbox gagal: $msg');
         _showSnackbar(msg, color: Colors.red);
         resetScan();
         return;
@@ -124,7 +127,7 @@ class _ScanPageState extends State<ScanPage> {
       return; // sudah di-redirect ke /login oleh ApiClient
     } on ApiResponseException catch (e) {
       debugPrint(
-        '[ScanPage] ✗ get-kanban endpoint return HTML HTTP ${e.statusCode}',
+        '[ScanPage] ✗ get-labelbox endpoint return HTML HTTP ${e.statusCode}',
       );
       setState(() => _isLoading = false);
       _showSnackbar(
@@ -152,13 +155,41 @@ class _ScanPageState extends State<ScanPage> {
     await PendingScanService.add(
       barcode: barcode,
       nik: nik,
-      // Tidak ada kanbanData karena GET pun gagal
+      // Tidak ada labelboxData karena GET pun gagal
     );
     setState(() => _isLoading = false);
     if (mounted) {
       _showSnackbar('Offline. Barcode disimpan di lokal', color: Colors.orange);
       resetScan();
     }
+  }
+
+  /// Server bisa balas `data` sebagai objek tunggal ({"id_box_label": ...})
+  /// maupun sebagai list ([{"id_box_label": ...}]). Normalisasi keduanya.
+  Map<String, dynamic>? _extractLabelboxData(dynamic raw) {
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is List && raw.isNotEmpty && raw.first is Map<String, dynamic>) {
+      return raw.first as Map<String, dynamic>;
+    }
+    return null;
+  }
+
+  /// Modal sukses yang menahan kamera agar tidak langsung rescan barcode yang
+  /// sama (mencegah snackbar/GET-POST flicker saat barcode masih di depan kamera).
+  /// Auto-tertutup sendiri, baru setelah itu [resetScan] dipanggil oleh caller.
+  Future<void> _showSuccessModal({
+    required String title,
+    String? material,
+    String? qty,
+  }) async {
+    if (!mounted) return;
+    HapticFeedback.mediumImpact();
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      barrierColor: Colors.black54,
+      builder: (_) => _SuccessDialog(title: title, material: material, qty: qty),
+    );
   }
 
   void _showSnackbar(String message, {Color color = Colors.blue}) {
@@ -177,23 +208,23 @@ class _ScanPageState extends State<ScanPage> {
     );
   }
 
-  Future<_ScanResult> submitKanban({
+  Future<_ScanResult> submitLabelbox({
     required String barcode,
     required String nik,
     required String qty,
-    Map<String, dynamic>? kanbanData,
+    Map<String, dynamic>? labelboxData,
   }) async {
     debugPrint(
-      '[ScanPage] submitKanban barcode=$barcode | nik=$nik | qty=$qty',
+      '[ScanPage] submitLabelbox barcode=$barcode | nik=$nik | qty=$qty',
     );
 
     // ── ONLINE DULU: kirim ke server ─────────────────────────────────────
     try {
       final payload = {'barcode': barcode, 'nik': nik, 'qty': qty};
-      debugPrint('[ScanPage] POST scan-kanban payload: $payload');
+      debugPrint('[ScanPage] POST scan-labelbox payload: $payload');
 
       final response = await ApiClient.post(
-        Uri.parse('${ApiConstants.baseUrl}/scan/scan-kanban'),
+        Uri.parse('${ApiConstants.baseUrl}/scan/scan-labelbox'),
         body: jsonEncode(payload),
       ).timeout(const Duration(seconds: 20));
 
@@ -209,7 +240,17 @@ class _ScanPageState extends State<ScanPage> {
           data['status'] == true ||
           msg.toLowerCase().contains('berhasil');
 
-      debugPrint('[ScanPage] submitKanban isSuccess=$isSuccess | msg=$msg');
+      debugPrint('[ScanPage] submitLabelbox isSuccess=$isSuccess | msg=$msg');
+
+      // Barcode ini bisa saja sudah kekirim di percobaan sebelumnya (mis. request
+      // sempat timeout di client padahal sudah diproses server). Bersihkan sisa
+      // cache lokal untuk barcode ini supaya tidak nyangkut & diulang terus.
+      final lowerMsg = msg.toLowerCase();
+      if (!isSuccess &&
+          (lowerMsg.contains('sudah discan') ||
+              lowerMsg.contains('sudah diproses'))) {
+        await PendingScanService.remove(barcode);
+      }
 
       return _ScanResult(
         isSuccess: isSuccess,
@@ -243,7 +284,7 @@ class _ScanPageState extends State<ScanPage> {
         barcode: barcode,
         nik: nik,
         qty: qty,
-        kanbanData: kanbanData,
+        labelboxData: labelboxData,
       );
       return _ScanResult(
         isSuccess: false,
@@ -257,7 +298,7 @@ class _ScanPageState extends State<ScanPage> {
         barcode: barcode,
         nik: nik,
         qty: qty,
-        kanbanData: kanbanData,
+        labelboxData: labelboxData,
       );
       return _ScanResult(
         isSuccess: false,
@@ -284,7 +325,7 @@ class _ScanPageState extends State<ScanPage> {
     dynamic errors,
   }) {
     final lines = <String>[
-      'HTTP $httpStatus · POST scan-kanban',
+      'HTTP $httpStatus · POST scan-labelbox',
       'Barcode : $barcode',
       'NIK     : $nik',
       'QTY     : $qty',
@@ -356,7 +397,7 @@ class _ScanPageState extends State<ScanPage> {
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         title: const Text(
-          'Scan Kanban',
+          'Scan Labelbox',
           style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
         ),
         centerTitle: true,
@@ -403,7 +444,7 @@ class _ScanPageState extends State<ScanPage> {
                 final barcode = barcodes.first;
                 if (barcode.rawValue != null) {
                   setState(() => _isScanned = true);
-                  fetchKanban(barcode.rawValue!);
+                  fetchLabelbox(barcode.rawValue!);
                 }
               }
             },
@@ -438,6 +479,75 @@ class _ScanPageState extends State<ScanPage> {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+// ─── Success Modal ────────────────────────────────────────────────────────────
+
+class _SuccessDialog extends StatefulWidget {
+  final String title;
+  final String? material;
+  final String? qty;
+
+  const _SuccessDialog({required this.title, this.material, this.qty});
+
+  @override
+  State<_SuccessDialog> createState() => _SuccessDialogState();
+}
+
+class _SuccessDialogState extends State<_SuccessDialog> {
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(milliseconds: 1400), () {
+      if (mounted) Navigator.of(context).pop();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 64,
+              height: 64,
+              decoration: BoxDecoration(
+                color: Colors.green.shade50,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.check_circle_rounded,
+                color: Colors.green.shade600,
+                size: 48,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              widget.title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            if (widget.material != null || widget.qty != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                [
+                  if (widget.material != null) widget.material,
+                  if (widget.qty != null) 'Qty: ${widget.qty}',
+                ].join(' · '),
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

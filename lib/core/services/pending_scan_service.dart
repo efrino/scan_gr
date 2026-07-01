@@ -9,8 +9,8 @@ import '../../core/constants/api_constants.dart';
 /// Cache lokal untuk scan yang belum terkirim ke server.
 ///
 /// Dua tipe item yang bisa tersimpan:
-///   1. [has_kanban_data = true]  → GET berhasil, POST gagal; punya data lengkap.
-///   2. [has_kanban_data = false] → GET pun gagal (offline total); hanya punya barcode & nik.
+///   1. [has_labelbox_data = true]  → GET berhasil, POST gagal; punya data lengkap.
+///   2. [has_labelbox_data = false] → GET pun gagal (offline total); hanya punya barcode & nik.
 ///
 /// Saat sync, tipe-2 akan GET dulu lalu POST.
 /// Deduplication by barcode — satu barcode hanya masuk sekali.
@@ -42,13 +42,13 @@ class PendingScanService {
   // ── Add ───────────────────────────────────────────────────────────────────
 
   /// Simpan scan gagal ke cache lokal.
-  /// [kanbanData] boleh null jika GET ikut gagal (offline total) — hanya barcode & nik yg tersimpan.
+  /// [labelboxData] boleh null jika GET ikut gagal (offline total) — hanya barcode & nik yg tersimpan.
   /// Tidak menambah duplikat jika barcode sudah ada.
   static Future<void> add({
     required String barcode,
     required String nik,
     String qty = '',
-    Map<String, dynamic>? kanbanData,
+    Map<String, dynamic>? labelboxData,
   }) async {
     final list = await getAll();
     if (list.any((e) => e['barcode'] == barcode)) {
@@ -62,15 +62,15 @@ class PendingScanService {
       'qty': qty,
       'is_scanned': 'N',
       'is_pending': true,
-      'has_kanban_data': kanbanData != null,
+      'has_labelbox_data': labelboxData != null,
       'cached_at': DateTime.now().toIso8601String(),
     };
 
-    if (kanbanData != null) entry.addAll(kanbanData);
+    if (labelboxData != null) entry.addAll(labelboxData);
 
     list.add(entry);
     await _save(list);
-    debugPrint('[PendingScanService] add – barcode=$barcode tersimpan (hasKanban=${kanbanData != null}) | total cache: ${list.length}');
+    debugPrint('[PendingScanService] add – barcode=$barcode tersimpan (hasLabelbox=${labelboxData != null}) | total cache: ${list.length}');
   }
 
   // ── Remove ────────────────────────────────────────────────────────────────
@@ -87,10 +87,19 @@ class PendingScanService {
 
   static Future<int> count() async => (await getAll()).length;
 
+  /// Server bisa balas `data` sebagai objek tunggal maupun list berisi satu objek.
+  static Map<String, dynamic>? _extractLabelboxData(dynamic raw) {
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is List && raw.isNotEmpty && raw.first is Map<String, dynamic>) {
+      return raw.first as Map<String, dynamic>;
+    }
+    return null;
+  }
+
   // ── Sync ──────────────────────────────────────────────────────────────────
 
   /// Kirim pending ke server satu per satu.
-  /// Item tanpa kanban data akan GET dulu lalu POST.
+  /// Item tanpa labelbox data akan GET dulu lalu POST.
   /// Berhenti jika offline atau 401. Mengembalikan jumlah berhasil dikirim.
   static Future<int> syncAll() async {
     if (_syncing) {
@@ -113,27 +122,25 @@ class PendingScanService {
         final barcode = item['barcode'] as String? ?? '';
         final nik = item['nik'] as String? ?? '';
         String qty = item['qty'] as String? ?? '';
-        final hasKanbanData = item['has_kanban_data'] == true;
+        final hasLabelboxData = item['has_labelbox_data'] == true;
 
-        debugPrint('[PendingScanService] sync item barcode=$barcode | hasKanban=$hasKanbanData');
+        debugPrint('[PendingScanService] sync item barcode=$barcode | hasLabelbox=$hasLabelboxData');
 
         try {
-          // ── Tipe 2: tidak punya data kanban — GET dulu ──────────────────
-          if (!hasKanbanData) {
-            debugPrint('[PendingScanService]   GET get-kanban untuk barcode=$barcode');
-            final getUri = Uri.parse('${ApiConstants.baseUrl}/scan/get-kanban')
+          // ── Tipe 2: tidak punya data labelbox — GET dulu ──────────────────
+          if (!hasLabelboxData) {
+            debugPrint('[PendingScanService]   GET get-labelbox untuk barcode=$barcode');
+            final getUri = Uri.parse('${ApiConstants.baseUrl}/scan/get-labelbox')
                 .replace(queryParameters: {'barcode': barcode});
             final getResp = await ApiClient.get(getUri);
             debugPrint('[PendingScanService]   GET ← ${getResp.statusCode}');
             debugPrint('[PendingScanService]   body: ${getResp.body}');
             final getData = jsonDecode(getResp.body);
 
-            if (getData['status'] == true &&
-                getData['data'] is List &&
-                (getData['data'] as List).isNotEmpty) {
-              final kanban = getData['data'][0] as Map<String, dynamic>;
+            final labelbox = _extractLabelboxData(getData['data']);
+            if (getData['status'] == true && labelbox != null) {
               final alreadyScanned =
-                  (kanban['is_scanned'] as String?)?.toUpperCase() == 'Y';
+                  (labelbox['is_scanned'] as String?)?.toUpperCase() == 'Y';
 
               if (alreadyScanned) {
                 debugPrint('[PendingScanService]   barcode=$barcode sudah discan orang lain → hapus dari cache');
@@ -141,7 +148,7 @@ class PendingScanService {
                 synced++;
                 continue;
               }
-              qty = kanban['quantity']?.toString() ?? '';
+              qty = labelbox['quantity']?.toString() ?? '';
             } else {
               debugPrint('[PendingScanService]   barcode=$barcode tidak ditemukan di server → hapus dari cache');
               await remove(barcode);
@@ -150,9 +157,9 @@ class PendingScanService {
           }
 
           // ── POST ke server ──────────────────────────────────────────────
-          debugPrint('[PendingScanService]   POST scan-kanban barcode=$barcode | nik=$nik | qty=$qty');
+          debugPrint('[PendingScanService]   POST scan-labelbox barcode=$barcode | nik=$nik | qty=$qty');
           final postResp = await ApiClient.post(
-            Uri.parse('${ApiConstants.baseUrl}/scan/scan-kanban'),
+            Uri.parse('${ApiConstants.baseUrl}/scan/scan-labelbox'),
             body: jsonEncode({'barcode': barcode, 'nik': nik, 'qty': qty}),
           );
           debugPrint('[PendingScanService]   POST ← ${postResp.statusCode}');
@@ -163,15 +170,21 @@ class PendingScanService {
           final ok = data['success'] == true ||
               data['status'] == true ||
               msg.contains('berhasil');
+          // Barcode ini bisa saja sudah kekirim di percobaan sebelumnya (mis. request
+          // sempat timeout di client padahal sudah diproses server) — server menolak
+          // via pesan "sudah discan/diproses". Ini bukan error yang perlu diulang,
+          // jadi tetap dianggap selesai dan dibuang dari cache.
+          final alreadyProcessed =
+              msg.contains('sudah discan') || msg.contains('sudah diproses');
 
-          if (ok) {
-            debugPrint('[PendingScanService]   ✓ berhasil sync barcode=$barcode');
+          if (ok || alreadyProcessed) {
+            debugPrint('[PendingScanService]   ✓ berhasil/duplikat sync barcode=$barcode → hapus dari cache');
             await remove(barcode);
             synced++;
           } else {
             debugPrint('[PendingScanService]   ✗ server tolak (SAP error) barcode=$barcode, tetap di cache');
           }
-          // Jika SAP error (ok = false), biarkan di cache, coba lagi nanti
+          // Jika SAP error asli (ok & alreadyProcessed = false), biarkan di cache, coba lagi nanti
         } on UnauthorizedException {
           debugPrint('[PendingScanService] ✗ 401 – berhenti sync');
           break; // Sesi habis
