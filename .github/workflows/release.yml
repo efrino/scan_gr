@@ -2,7 +2,8 @@
 #   git tag -a v1.0.3 -m "Perbaikan sinkronisasi antrian" && git push origin v1.0.3
 #
 # - versionName  = nama tag tanpa "v" (1.0.3)
-# - versionCode  = nomor run Actions + 100 (selalu naik, di atas build manual 1-3)
+# - versionCode  = build terakhir di server + 1 (sama dengan scripts/release.ps1,
+#                  sehingga rilis dari Actions dan dari PC tidak bentrok nomor)
 # - Catatan rilis = pesan tag (annotated tag), atau daftar commit sejak tag sebelumnya
 # - Rilis didaftarkan ke server sebagai update WAJIB (min_version_code = versi ini).
 #   Ubah ke opsional lewat CMS app-release jika perlu.
@@ -31,7 +32,25 @@ env:
   VERSION_URL: https://mspin.newarmada.biz/portal-supplier/public/api/app/version
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      exists: ${{ steps.check.outputs.exists }}
+    steps:
+      - name: Cek release sudah ada
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Release bisa sudah dibuat skrip lokal scripts/release.ps1.
+          if gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME sudah ada, rilis dilewati."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+
   release:
+    needs: check
+    if: needs.check.outputs.exists != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -47,7 +66,8 @@ jobs:
           if ! echo "$NAME" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "::error::Tag harus berformat vX.Y.Z, dapat: $TAG"; exit 1
           fi
-          CODE=$(( GITHUB_RUN_NUMBER + 100 ))
+          LATEST=$(curl -sf --max-time 20 "$VERSION_URL" | jq -r '.data.version_code // 0')
+          CODE=$(( LATEST + 1 ))
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
           echo "file=scan_gr-$NAME-$CODE.apk" >> "$GITHUB_OUTPUT"
