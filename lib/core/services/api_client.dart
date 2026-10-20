@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import '../constants/api_constants.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
@@ -33,25 +35,32 @@ class ApiClient {
   static final navigatorKey = GlobalKey<NavigatorState>();
 
   // HTTP client yang melewati verifikasi sertifikat SSL yang kedaluwarsa.
-  static final http.Client _client = IOClient(
+  static http.Client _client = IOClient(
     HttpClient()..badCertificateCallback = (cert, host, port) => true,
   );
+
+  @visibleForTesting
+  static set client(http.Client c) => _client = c;
+
+  @visibleForTesting
+  static void resetFallbackState() => _primaryDownUntil = null;
 
   // ── Unauthenticated POST (login) ──────────────────────────────────────────
 
   static Future<http.Response> postNoAuth(Uri uri, {Object? body}) async {
-    debugPrint('[ApiClient] POST (no-auth) → $uri');
     debugPrint('[ApiClient]   body: $body');
-    final response = await _client.post(
+    final response = await _withFallback(
+      'POST (no-auth)',
       uri,
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: body,
+      (u) => _client.post(
+        u,
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: body,
+      ),
     );
-    debugPrint('[ApiClient] ← ${response.statusCode} | ${uri.path}');
-    debugPrint('[ApiClient]   body: ${response.body}');
     _assertJson(response);
     return response;
   }
@@ -80,18 +89,18 @@ class ApiClient {
 
   static void _redirectToLogin() {
     debugPrint('[ApiClient] → redirect ke /login');
-    navigatorKey.currentState
-        ?.pushNamedAndRemoveUntil('/login', (_) => false);
+    navigatorKey.currentState?.pushNamedAndRemoveUntil('/login', (_) => false);
   }
 
   // ── GET ───────────────────────────────────────────────────────────────────
 
   static Future<http.Response> get(Uri uri) async {
     final token = await _token();
-    debugPrint('[ApiClient] GET → $uri');
-    final response = await _client.get(uri, headers: _headers(token));
-    debugPrint('[ApiClient] ← ${response.statusCode} | ${uri.path}');
-    debugPrint('[ApiClient]   body: ${response.body}');
+    final response = await _withFallback(
+      'GET',
+      uri,
+      (u) => _client.get(u, headers: _headers(token)),
+    );
 
     if (response.statusCode == 401) {
       await _clearSession();
@@ -109,15 +118,12 @@ class ApiClient {
 
   static Future<http.Response> post(Uri uri, {Object? body}) async {
     final token = await _token();
-    debugPrint('[ApiClient] POST → $uri');
     debugPrint('[ApiClient]   body: $body');
-    final response = await _client.post(
+    final response = await _withFallback(
+      'POST',
       uri,
-      headers: _headers(token),
-      body: body,
+      (u) => _client.post(u, headers: _headers(token), body: body),
     );
-    debugPrint('[ApiClient] ← ${response.statusCode} | ${uri.path}');
-    debugPrint('[ApiClient]   body: ${response.body}');
 
     if (response.statusCode == 401) {
       await _clearSession();
@@ -128,6 +134,80 @@ class ApiClient {
     _assertJson(response);
 
     return response;
+  }
+
+  // ── Fallback server ───────────────────────────────────────────────────────
+
+  /// Batas waktu per server. Total (utama + lokal) harus di bawah timeout
+  /// pemanggil (GET 15 detik, POST 20 detik di ScanPage).
+  static const _primaryTimeout = Duration(seconds: 6);
+  static const _fallbackTimeout = Duration(seconds: 8);
+
+  /// Setelah server utama gagal, request berikutnya langsung ke server lokal
+  /// selama durasi ini. Tanpa ini, tiap request (termasuk tiap item antrian)
+  /// harus menunggu timeout server utama dulu.
+  static const _primaryCooldown = Duration(seconds: 60);
+  static DateTime? _primaryDownUntil;
+
+  /// Kirim ke server utama dulu. Jika gagal jaringan, timeout, atau 5xx,
+  /// ulangi request yang sama ke server lokal.
+  static Future<http.Response> _withFallback(
+    String method,
+    Uri uri,
+    Future<http.Response> Function(Uri) send,
+  ) async {
+    final fallbackUri = _toFallback(uri);
+    final skipPrimary =
+        fallbackUri != null &&
+        _primaryDownUntil != null &&
+        DateTime.now().isBefore(_primaryDownUntil!);
+
+    if (!skipPrimary) {
+      try {
+        debugPrint('[ApiClient] $method → $uri');
+        final response = await send(uri).timeout(_primaryTimeout);
+        _logResponse(response, uri);
+        if (response.statusCode < 500 || fallbackUri == null) {
+          _primaryDownUntil = null;
+          return response;
+        }
+        debugPrint(
+          '[ApiClient] ⚠ server utama ${response.statusCode}, coba server lokal',
+        );
+      } on SocketException catch (e) {
+        if (fallbackUri == null) rethrow;
+        debugPrint(
+          '[ApiClient] ⚠ server utama tidak terjangkau ($e), coba server lokal',
+        );
+      } on TimeoutException {
+        if (fallbackUri == null) rethrow;
+        debugPrint('[ApiClient] ⚠ server utama timeout, coba server lokal');
+      } on http.ClientException catch (e) {
+        if (fallbackUri == null) rethrow;
+        debugPrint('[ApiClient] ⚠ server utama error ($e), coba server lokal');
+      }
+      _primaryDownUntil = DateTime.now().add(_primaryCooldown);
+    }
+
+    debugPrint('[ApiClient] $method (lokal) → $fallbackUri');
+    final response = await send(fallbackUri).timeout(_fallbackTimeout);
+    _logResponse(response, fallbackUri);
+    return response;
+  }
+
+  /// Ganti prefix server utama dengan server lokal. Null jika uri bukan
+  /// milik server utama.
+  static Uri? _toFallback(Uri uri) {
+    final url = uri.toString();
+    if (!url.startsWith(ApiConstants.baseUrl)) return null;
+    return Uri.parse(
+      ApiConstants.fallbackBaseUrl + url.substring(ApiConstants.baseUrl.length),
+    );
+  }
+
+  static void _logResponse(http.Response response, Uri uri) {
+    debugPrint('[ApiClient] ← ${response.statusCode} | ${uri.host}${uri.path}');
+    debugPrint('[ApiClient]   body: ${response.body}');
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -148,8 +228,8 @@ class ApiClient {
   }
 
   static Map<String, String> _headers(String token) => {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $token',
-      };
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer $token',
+  };
 }
