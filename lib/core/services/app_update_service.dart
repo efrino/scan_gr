@@ -1,14 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:crypto/crypto.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants/api_constants.dart';
 import 'api_client.dart';
@@ -131,6 +134,8 @@ class AppUpdateService {
         queryParameters: {
           'platform': 'android',
           'current_version_code': '$installed',
+          'current_version_name': pkg.version,
+          ...await _deviceParams(),
         },
       );
       final res = await ApiClient.get(uri);
@@ -161,6 +166,40 @@ class AppUpdateService {
       _lastCheck = null;
       return null;
     }
+  }
+
+  // ── Identitas device (statistik versi di CMS) ────────────────────────────
+
+  static const _deviceIdKey = 'app_device_id';
+
+  /// `device_id` acak dibuat sekali lalu disimpan; ikut terhapus jika app
+  /// di-uninstall. Ditambah NIK user yang login dan model device.
+  static Future<Map<String, String>> _deviceParams() async {
+    final params = <String, String>{};
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      var id = prefs.getString(_deviceIdKey);
+      if (id == null) {
+        final rnd = Random.secure();
+        id = List.generate(
+          16,
+          (_) => rnd.nextInt(256),
+        ).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+        await prefs.setString(_deviceIdKey, id);
+      }
+      params['device_id'] = id;
+
+      final nik = prefs.getString('nik');
+      if (nik != null && nik.isNotEmpty) params['nik'] = nik;
+
+      if (Platform.isAndroid) {
+        final info = await DeviceInfoPlugin().androidInfo;
+        params['device_model'] = '${info.manufacturer} ${info.model}'.trim();
+      }
+    } catch (e) {
+      debugPrint('[AppUpdate] info device tidak lengkap: $e');
+    }
+    return params;
   }
 
   // ── Download ──────────────────────────────────────────────────────────────
