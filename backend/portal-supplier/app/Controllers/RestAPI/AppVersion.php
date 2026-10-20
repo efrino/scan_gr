@@ -14,6 +14,7 @@ class AppVersion extends ResourceController
 
     public function latest()
     {
+        date_default_timezone_set('Asia/Jakarta');
         $platform = $this->request->getGet('platform') ?: 'android';
 
         try {

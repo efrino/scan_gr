@@ -34,6 +34,7 @@ if "AppRelease::index" not in s:
         "// CMS rilis aplikasi GR Scanner (admin)\n"
         "$routes->group('app-release', ['namespace' => 'App\\Controllers'], function ($routes) {\n"
         "    $routes->get('/', 'AppRelease::index');\n"
+        "    $routes->post('chunk', 'AppRelease::chunk');\n"
         "    $routes->post('store', 'AppRelease::store');\n"
         "    $routes->post('min/(:num)', 'AppRelease::setMin/$1');\n"
         "    $routes->post('toggle/(:num)', 'AppRelease::toggle/$1');\n"

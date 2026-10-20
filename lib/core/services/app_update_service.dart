@@ -112,8 +112,9 @@ class UpdateCheckResult {
 class AppUpdateService {
   AppUpdateService._();
 
-  /// Jeda minimum antar cek otomatis (saat app dibuka / resume).
-  static const checkInterval = Duration(minutes: 30);
+  /// Jeda cek otomatis: cek berkala selama app terbuka, dan jeda minimum
+  /// antar cek saat resume. Update wajib sampai paling lambat selama ini.
+  static const checkInterval = Duration(minutes: 15);
 
   static DateTime? _lastCheck;
 

@@ -22,6 +22,8 @@ class AppRelease extends BaseController
     public function __construct()
     {
         $this->ionAuth = new IonAuth();
+        // Zona waktu server UTC; waktu rilis & device ditampilkan dalam WIB.
+        date_default_timezone_set('Asia/Jakarta');
     }
 
     /** Hanya grup admin. Mengembalikan response jika ditolak. */
@@ -82,7 +84,6 @@ class AppRelease extends BaseController
             'stats'         => $stats,
             'devices'       => $devices,
             'githubReady'   => (new GithubRelease())->isConfigured(),
-            'maxUploadSize' => ini_get('upload_max_filesize'),
         ];
 
         return $this->_render_page('app_release/index', $data);
@@ -95,22 +96,29 @@ class AppRelease extends BaseController
             return $denied;
         }
 
-        $file = $this->request->getFile('apk');
-        if (! $file || ! $file->isValid()) {
-            return $this->back('error', 'File APK belum dipilih atau gagal diunggah'
-                . ($file ? ' (' . $file->getErrorString() . ')' : '') . '.');
-        }
-        if (strtolower($file->getClientExtension()) !== 'apk') {
-            return $this->back('error', 'File harus berekstensi .apk.');
+        // APK dikirim bertahap lewat chunk() karena proxy nginx di depan mspin
+        // membatasi ukuran request; di sini potongan dirakit jadi satu file.
+        try {
+            $tmpPath = $this->assembleChunks(
+                (string) $this->request->getPost('upload_id'),
+                (int) $this->request->getPost('total_chunks'),
+                (string) $this->request->getPost('file_name')
+            );
+        } catch (\Throwable $e) {
+            return $this->back('error', $e->getMessage());
         }
 
         try {
-            $apk = ApkInfo::read($file->getTempName());
+            $apk = ApkInfo::read($tmpPath);
         } catch (\Throwable $e) {
+            @unlink($tmpPath);
+
             return $this->back('error', 'APK tidak bisa dibaca: ' . $e->getMessage());
         }
 
         if ($apk->package !== self::PACKAGE) {
+            @unlink($tmpPath);
+
             return $this->back('error', "APK ini bukan GR Scanner (package {$apk->package}).");
         }
 
@@ -118,17 +126,24 @@ class AppRelease extends BaseController
         $latest = $db->table('app_versions')->where('platform', self::PLATFORM)
             ->selectMax('version_code')->get()->getRow()->version_code ?? 0;
         if ($apk->versionCode <= (int) $latest) {
+            @unlink($tmpPath);
+
             return $this->back('error', "versionCode APK ({$apk->versionCode}) harus lebih besar dari versi "
                 . "terakhir ({$latest}). Untuk rollback, build ulang kode lama dengan versionCode lebih tinggi.");
         }
 
-        $min = (int) ($this->request->getPost('min_version_code') ?: 0);
+        // "" = opsional (pakai minimum yang berlaku), "new" = wajib ke versi ini,
+        // angka = wajib untuk versi di bawah build tersebut.
+        $minInput = (string) $this->request->getPost('min_version_code');
+        $min      = $minInput === 'new' ? $apk->versionCode : (int) $minInput;
         if ($min <= 0) {
             $current = $db->table('app_versions')->where('platform', self::PLATFORM)
                 ->where('is_active', 1)->orderBy('version_code', 'DESC')->get(1)->getRow();
             $min = $current ? (int) $current->min_version_code : $apk->versionCode;
         }
         if ($min > $apk->versionCode) {
+            @unlink($tmpPath);
+
             return $this->back('error', 'Versi minimum tidak boleh lebih besar dari versi yang dirilis.');
         }
 
@@ -139,8 +154,13 @@ class AppRelease extends BaseController
             mkdir(self::APK_DIR, 0775, true);
         }
         $fileName = "scan_gr-{$apk->versionName}-{$apk->versionCode}.apk";
-        $file->move(self::APK_DIR, $fileName, true);
         $path = self::APK_DIR . $fileName;
+        if (! @rename($tmpPath, $path)) {
+            @unlink($tmpPath);
+
+            return $this->back('error', 'Gagal menyimpan APK ke folder public/apk/ di server. '
+                . 'Pastikan folder itu bisa ditulis oleh web server (www-data).');
+        }
         @chmod($path, 0644);
 
         $localUrl = base_url('apk/' . $fileName);
@@ -212,7 +232,10 @@ class AppRelease extends BaseController
 
         $db->table('app_versions')->where('id', $id)->update(['min_version_code' => $min]);
 
-        return $this->back('success', "Versi minimum untuk {$row->version_name} diubah ke build {$min}.");
+        $minName = $db->table('app_versions')->where('platform', $row->platform)
+            ->where('version_code', $min)->get()->getRow()->version_name ?? "build {$min}";
+
+        return $this->back('success', "Versi {$row->version_name}: versi tertua yang boleh dipakai sekarang {$minName}.");
     }
 
     /** Aktif/nonaktifkan versi. Versi aktif tertinggi adalah production. */
@@ -232,6 +255,96 @@ class AppRelease extends BaseController
         $db->table('app_versions')->where('id', $id)->update(['is_active' => $active]);
 
         return $this->back('success', "Versi {$row->version_name} " . ($active ? 'diaktifkan.' : 'dinonaktifkan.'));
+    }
+
+    // ── Upload bertahap ───────────────────────────────────────────────────────
+
+    private const CHUNK_DIR  = WRITEPATH . 'uploads/apk_chunks/';
+    private const CHUNK_MAX  = 900 * 1024;   // di bawah batas 1 MB proxy
+    private const CHUNKS_MAX = 200;          // ±128 MB pada 640 KB per potong
+
+    /** Terima satu potongan APK. Dipanggil berurutan oleh JS di halaman CMS. */
+    public function chunk()
+    {
+        if (! $this->ionAuth->loggedIn() || ! $this->ionAuth->isAdmin()) {
+            return $this->response->setStatusCode(403)
+                ->setJSON(['ok' => false, 'message' => 'Sesi habis atau bukan admin. Muat ulang halaman.']);
+        }
+
+        $id    = (string) $this->request->getPost('upload_id');
+        $index = (int) $this->request->getPost('index');
+        $total = (int) $this->request->getPost('total');
+        $part  = $this->request->getFile('chunk');
+
+        if (! preg_match('/^[a-f0-9]{32}$/', $id) || $total < 1 || $total > self::CHUNKS_MAX
+            || $index < 0 || $index >= $total) {
+            return $this->response->setStatusCode(422)->setJSON(['ok' => false, 'message' => 'Data potongan tidak valid.']);
+        }
+        if (! $part || ! $part->isValid() || $part->getSize() > self::CHUNK_MAX) {
+            return $this->response->setStatusCode(422)->setJSON(['ok' => false, 'message' => 'Potongan gagal diterima.']);
+        }
+
+        if ($index === 0) {
+            $this->purgeOldChunks();
+        }
+
+        $dir = self::CHUNK_DIR . $id . '/';
+        if (! is_dir($dir)) {
+            mkdir($dir, 0775, true);
+        }
+        $part->move($dir, (string) $index, true);
+
+        return $this->response->setJSON(['ok' => true, 'index' => $index]);
+    }
+
+    /** Rakit potongan jadi satu file sementara. Mengembalikan path file. */
+    private function assembleChunks(string $id, int $total, string $fileName): string
+    {
+        if (! preg_match('/^[a-f0-9]{32}$/', $id) || $total < 1 || $total > self::CHUNKS_MAX) {
+            throw new \RuntimeException('File APK belum dipilih atau unggahan belum selesai.');
+        }
+        if (strtolower(pathinfo($fileName, PATHINFO_EXTENSION)) !== 'apk') {
+            throw new \RuntimeException('File harus berekstensi .apk.');
+        }
+
+        $dir = self::CHUNK_DIR . $id . '/';
+        $out = self::CHUNK_DIR . $id . '.apk';
+        $fh  = fopen($out, 'wb');
+        try {
+            for ($i = 0; $i < $total; $i++) {
+                if (! is_file($dir . $i)) {
+                    throw new \RuntimeException("Unggahan tidak lengkap (potongan {$i} hilang). Coba rilis ulang.");
+                }
+                fwrite($fh, file_get_contents($dir . $i));
+            }
+        } catch (\Throwable $e) {
+            fclose($fh);
+            @unlink($out);
+            $this->removeDir($dir);
+            throw $e;
+        }
+        fclose($fh);
+        $this->removeDir($dir);
+
+        return $out;
+    }
+
+    /** Hapus sisa unggahan yang tidak selesai (lebih dari 1 hari). */
+    private function purgeOldChunks(): void
+    {
+        foreach (glob(self::CHUNK_DIR . '*') ?: [] as $p) {
+            if (filemtime($p) < time() - 86400) {
+                is_dir($p) ? $this->removeDir($p . '/') : @unlink($p);
+            }
+        }
+    }
+
+    private function removeDir(string $dir): void
+    {
+        foreach (glob($dir . '*') ?: [] as $f) {
+            @unlink($f);
+        }
+        @rmdir($dir);
     }
 
     private function back(string $type, string $message)

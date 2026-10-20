@@ -1,10 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/services/app_update_service.dart';
 import '../../core/services/pending_scan_service.dart';
 
 /// Lapisan di atas seluruh app (dipasang lewat `MaterialApp.builder`).
-/// Cek versi saat app dibuka dan saat kembali ke depan, lalu menampilkan
+/// Cek versi saat app dibuka, saat kembali ke depan, dan berkala selama app
+/// terbuka, lalu menampilkan
 /// ajakan update (opsional) atau layar wajib update.
 ///
 /// Ditaruh sebagai layer Stack, bukan dialog/route, supaya tidak ikut
@@ -31,23 +34,39 @@ class _UpdateGateState extends State<UpdateGate> with WidgetsBindingObserver {
   /// app dibuka ulang.
   int? _snoozedVersion;
 
+  /// Cek berkala selama app terbuka di layar. Operator sering membiarkan app
+  /// terbuka seharian, jadi cek saat dibuka/resume saja tidak cukup.
+  Timer? _timer;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _check(ignoreInterval: true);
+    _startTimer();
   }
 
   @override
   void dispose() {
+    _timer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
+  void _startTimer() {
+    _timer?.cancel();
+    _timer = Timer.periodic(AppUpdateService.checkInterval, (_) {
+      if (_phase != _Phase.downloading) _check(ignoreInterval: true);
+    });
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _phase != _Phase.downloading) {
-      _check();
+    if (state == AppLifecycleState.resumed) {
+      _startTimer();
+      if (_phase != _Phase.downloading) _check();
+    } else if (state == AppLifecycleState.paused) {
+      _timer?.cancel(); // jangan cek di background
     }
   }
 

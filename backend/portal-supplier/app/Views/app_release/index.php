@@ -6,6 +6,16 @@ $esc = static fn ($v) => esc((string) ($v ?? ''));
 $totalDevices = array_sum(array_column($stats, 'total'));
 $prodCode = $production ? (int) $production['version_code'] : null;
 $prodMin = $production ? (int) $production['min_version_code'] : null;
+
+// Nama versi per build, untuk menampilkan versi minimum sebagai nama, bukan angka.
+$nameByCode = [];
+foreach ($versions as $v) {
+    $nameByCode[(int) $v['version_code']] = $v['version_name'];
+}
+ksort($nameByCode);
+$label = static fn (int $code) => isset($nameByCode[$code])
+    ? $nameByCode[$code] . ' (build ' . $code . ')'
+    : 'build ' . $code;
 ?>
 <section class="content">
   <div class="container-fluid">
@@ -36,8 +46,8 @@ $prodMin = $production ? (int) $production['min_version_code'] : null;
         <div class="info-box">
           <span class="info-box-icon bg-danger"><i class="fas fa-lock"></i></span>
           <div class="info-box-content">
-            <span class="info-box-text">Wajib update di bawah</span>
-            <span class="info-box-number"><?= $prodMin !== null ? 'build ' . $prodMin : '-' ?></span>
+            <span class="info-box-text">Versi tertua yang masih boleh dipakai</span>
+            <span class="info-box-number"><?= $prodMin !== null ? $esc($label($prodMin)) : '-' ?></span>
           </div>
         </div>
       </div>
@@ -57,23 +67,37 @@ $prodMin = $production ? (int) $production['min_version_code'] : null;
       <div class="col-lg-5">
         <div class="card card-primary card-outline">
           <div class="card-header"><h3 class="card-title">Rilis versi baru</h3></div>
-          <form action="<?= base_url('app-release/store') ?>" method="post" enctype="multipart/form-data" id="release-form">
+          <form action="<?= base_url('app-release/store') ?>" method="post" id="release-form"
+                data-chunk-url="<?= base_url('app-release/chunk') ?>">
             <?= csrf_field() ?>
+            <input type="hidden" name="upload_id" id="upload_id">
+            <input type="hidden" name="total_chunks" id="total_chunks">
+            <input type="hidden" name="file_name" id="file_name">
             <div class="card-body">
               <div class="form-group">
                 <label for="apk">File APK release</label>
-                <input type="file" class="form-control-file" id="apk" name="apk" accept=".apk" required>
+                <input type="file" class="form-control-file" id="apk" accept=".apk" required>
                 <small class="form-text text-muted">
                   Versi dan build dibaca otomatis dari APK. Build harus lebih besar dari versi terakhir.
-                  Maks. <?= $esc($maxUploadSize) ?>.
                 </small>
+                <div id="upload-progress" class="mt-2" hidden>
+                  <div class="progress progress-sm"><div class="progress-bar" id="upload-bar" style="width: 0%"></div></div>
+                  <small class="text-muted" id="upload-text">Mengunggah...</small>
+                </div>
+                <div class="text-danger small mt-2" id="upload-error" hidden></div>
               </div>
               <div class="form-group">
-                <label for="min_version_code">Wajib update untuk build di bawah</label>
-                <input type="number" min="1" class="form-control" id="min_version_code" name="min_version_code"
-                       placeholder="<?= $prodMin !== null ? 'Kosongkan = tetap build ' . $prodMin : 'Kosongkan = build APK ini' ?>">
+                <label for="min_version_code">Sifat update</label>
+                <select class="form-control" id="min_version_code" name="min_version_code">
+                  <option value="">Opsional: device boleh menunda update</option>
+                  <?php foreach (array_reverse($nameByCode, true) as $code => $name):
+                    if ($prodMin !== null && $code <= $prodMin) continue; ?>
+                    <option value="<?= $code ?>">Wajib untuk versi di bawah <?= $esc($name) ?></option>
+                  <?php endforeach ?>
+                  <option value="new">Wajib untuk semua device (versi yang dirilis ini)</option>
+                </select>
                 <small class="form-text text-muted">
-                  Kosongkan jika update opsional. Isi dengan build APK ini untuk memaksa semua device update.
+                  Wajib = app di device terkunci sampai diupdate. Antrian scan tetap aman.
                 </small>
               </div>
               <div class="form-group">
@@ -141,7 +165,7 @@ $prodMin = $production ? (int) $production['min_version_code'] : null;
             <tr>
               <th>Versi</th>
               <th>Build</th>
-              <th>Wajib update di bawah</th>
+              <th>Versi tertua yang boleh dipakai</th>
               <th>Status</th>
               <th>Dirilis</th>
               <th>Unduhan</th>
@@ -166,10 +190,15 @@ $prodMin = $production ? (int) $production['min_version_code'] : null;
               <td>
                 <form action="<?= base_url('app-release/min/' . (int) $v['id']) ?>" method="post" class="form-inline">
                   <?= csrf_field() ?>
-                  <input type="number" name="min_version_code" min="1" max="<?= (int) $v['version_code'] ?>"
-                         value="<?= (int) $v['min_version_code'] ?>" class="form-control form-control-sm" style="width: 80px"
-                         aria-label="Versi minimum untuk <?= $esc($v['version_name']) ?>">
-                  <button class="btn btn-sm btn-outline-secondary ml-1" type="submit">Simpan</button>
+                  <select name="min_version_code" class="form-control form-control-sm" onchange="this.form.submit()"
+                          aria-label="Versi tertua yang boleh dipakai untuk <?= $esc($v['version_name']) ?>">
+                    <?php foreach ($nameByCode as $code => $name):
+                      if ($code > (int) $v['version_code']) continue; ?>
+                      <option value="<?= $code ?>" <?= $code === (int) $v['min_version_code'] ? 'selected' : '' ?>>
+                        <?= $esc($name) ?><?= $code === array_key_first($nameByCode) ? ' (semua boleh)' : '' ?>
+                      </option>
+                    <?php endforeach ?>
+                  </select>
                 </form>
               </td>
               <td>
@@ -250,11 +279,86 @@ $prodMin = $production ? (int) $production['min_version_code'] : null;
 </section>
 
 <script>
-  // Unggah APK ±70 MB butuh waktu; cegah klik ganda.
-  document.getElementById('release-form').addEventListener('submit', function () {
+  // Proxy nginx di depan mspin menolak request > 1 MB, jadi APK dikirim per
+  // potongan 640 KB ke app-release/chunk, lalu form dikirim tanpa file.
+  (function () {
+    var CHUNK = 640 * 1024;
+    var form = document.getElementById('release-form');
+    var input = document.getElementById('apk');
     var btn = document.getElementById('release-submit');
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Mengunggah & merilis...';
-  });
+    var box = document.getElementById('upload-progress');
+    var bar = document.getElementById('upload-bar');
+    var text = document.getElementById('upload-text');
+    var err = document.getElementById('upload-error');
+    var csrf = form.querySelector('input[type=hidden][name^=csrf]');
+    var sending = false;
+
+    function randomId() {
+      var a = new Uint8Array(16);
+      crypto.getRandomValues(a);
+      return Array.from(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+    }
+
+    async function sendChunk(id, index, total, blob) {
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        var fd = new FormData();
+        if (csrf) fd.append(csrf.name, csrf.value);
+        fd.append('upload_id', id);
+        fd.append('index', index);
+        fd.append('total', total);
+        fd.append('chunk', blob, 'part');
+        try {
+          var res = await fetch(form.dataset.chunkUrl, { method: 'POST', body: fd, credentials: 'same-origin' });
+          var body = await res.json().catch(function () { return {}; });
+          if (res.ok && body.ok) return;
+          if (res.status === 403 || res.status === 422) throw new Error(body.message || ('HTTP ' + res.status));
+        } catch (e) {
+          if (attempt === 3 || /admin|tidak valid/.test(e.message)) throw e;
+        }
+        await new Promise(function (r) { setTimeout(r, 1000 * attempt); });
+      }
+      throw new Error('Potongan ' + (index + 1) + ' gagal dikirim.');
+    }
+
+    form.addEventListener('submit', async function (ev) {
+      if (form.dataset.ready === '1') return;   // potongan sudah terkirim, kirim form
+      ev.preventDefault();
+      if (sending) return;
+
+      var file = input.files[0];
+      if (!file) return;
+      sending = true;
+      err.hidden = true;
+      btn.disabled = true;
+      box.hidden = false;
+
+      var id = randomId();
+      var total = Math.ceil(file.size / CHUNK);
+      try {
+        for (var i = 0; i < total; i++) {
+          await sendChunk(id, i, total, file.slice(i * CHUNK, (i + 1) * CHUNK));
+          var pct = Math.round((i + 1) / total * 100);
+          bar.style.width = pct + '%';
+          text.textContent = 'Mengunggah ' + pct + '% (' + (file.size / 1048576).toFixed(1) + ' MB)';
+        }
+      } catch (e) {
+        sending = false;
+        btn.disabled = false;
+        box.hidden = true;
+        err.textContent = 'Unggahan gagal: ' + e.message;
+        err.hidden = false;
+        return;
+      }
+
+      document.getElementById('upload_id').value = id;
+      document.getElementById('total_chunks').value = total;
+      document.getElementById('file_name').value = file.name;
+      text.textContent = 'Unggahan selesai. Memproses rilis dan mengirim ke GitHub...';
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Merilis...';
+      input.disabled = true;           // file tidak ikut terkirim lagi
+      form.dataset.ready = '1';
+      form.submit();
+    });
+  })();
 </script>
 <?= $this->endSection() ?>
