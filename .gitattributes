@@ -1,0 +1,2 @@
+# Skrip shell dijalankan di server Linux: wajib LF.
+*.sh text eol=lf
