@@ -44,6 +44,14 @@ if "AppRelease::index" not in s:
     open(p, "w").write(s)
     print("route ditambah")
 
+hook = "    $routes->post('app/release-hook', 'AppVersion::releaseHook');\n"
+if "AppVersion::releaseHook" not in s:
+    anchor = "    $routes->get('app/version', 'AppVersion::latest');\n"
+    assert s.count(anchor) == 1, "anchor route app/version tidak ditemukan"
+    s = s.replace(anchor, anchor + hook, 1)
+    open(p, "w").write(s)
+    print("route release-hook ditambah")
+
 p = root + "/app/Config/Menu.php"
 s = open(p).read()
 if "'app_release'" not in s:

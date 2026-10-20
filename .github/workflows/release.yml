@@ -1,0 +1,146 @@
+# Rilis GR Scanner otomatis saat tag v* di-push, contoh:
+#   git tag -a v1.0.3 -m "Perbaikan sinkronisasi antrian" && git push origin v1.0.3
+#
+# - versionName  = nama tag tanpa "v" (1.0.3)
+# - versionCode  = nomor run Actions + 100 (selalu naik, di atas build manual 1-3)
+# - Catatan rilis = pesan tag (annotated tag), atau daftar commit sejak tag sebelumnya
+# - Rilis didaftarkan ke server sebagai update WAJIB (min_version_code = versi ini).
+#   Ubah ke opsional lewat CMS app-release jika perlu.
+#
+# Secrets yang dibutuhkan (Settings → Secrets and variables → Actions):
+#   ANDROID_KEYSTORE_BASE64   isi file scan_gr-release.jks dalam base64
+#   ANDROID_KEYSTORE_PASSWORD password keystore (store & key sama)
+#   ANDROID_KEY_ALIAS         alias key (scan_gr)
+#   RELEASE_HOOK_TOKEN        token acak; sama dengan RELEASE_HOOK_TOKEN di .env server
+
+name: Release APK
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  HOOK_URL: https://mspin.newarmada.biz/portal-supplier/public/api/app/release-hook
+  VERSION_URL: https://mspin.newarmada.biz/portal-supplier/public/api/app/version
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Tentukan versi
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          NAME="${TAG#v}"
+          if ! echo "$NAME" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag harus berformat vX.Y.Z, dapat: $TAG"; exit 1
+          fi
+          CODE=$(( GITHUB_RUN_NUMBER + 100 ))
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "file=scan_gr-$NAME-$CODE.apk" >> "$GITHUB_OUTPUT"
+
+          # Catatan rilis: pesan annotated tag, atau commit sejak tag sebelumnya.
+          NOTES=$(git tag -l --format='%(contents)' "$TAG" | sed '/^-----BEGIN/,$d')
+          if [ -z "$(echo "$NOTES" | tr -d '[:space:]')" ] || [ "$NOTES" = "$(git log -1 --format=%B "$TAG")" ]; then
+            PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+            RANGE=${PREV:+$PREV..}$TAG
+            NOTES=$(git log --no-merges --format='- %s' "$RANGE" | grep -v '^- chore' | head -20)
+          fi
+          [ -z "$NOTES" ] && NOTES="Versi $NAME."
+          { echo "notes<<__END__"; echo "$NOTES"; echo "__END__"; } >> "$GITHUB_OUTPUT"
+          echo "Versi $NAME (build $CODE)"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.38.1'
+          cache: true
+
+      - name: Siapkan keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then echo "::error::Secret ANDROID_KEYSTORE_BASE64 belum diisi"; exit 1; fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          cat > android/key.properties <<EOF
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=$RUNNER_TEMP/release.jks
+          EOF
+
+      - run: flutter pub get
+
+      - name: Test
+        run: flutter test
+
+      - name: Build APK
+        run: |
+          flutter build apk --release \
+            --build-name=${{ steps.ver.outputs.name }} \
+            --build-number=${{ steps.ver.outputs.code }}
+          cp build/app/outputs/flutter-apk/app-release.apk "${{ steps.ver.outputs.file }}"
+          echo "SHA256=$(sha256sum "${{ steps.ver.outputs.file }}" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "SIZE=$(stat -c %s "${{ steps.ver.outputs.file }}")" >> "$GITHUB_ENV"
+
+      - name: Buat GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ steps.ver.outputs.notes }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "${{ steps.ver.outputs.file }}" \
+            --title "GR Scanner ${{ steps.ver.outputs.name }} (build ${{ steps.ver.outputs.code }})" \
+            --notes "$NOTES"
+          echo "APK_URL=https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${{ steps.ver.outputs.file }}" >> "$GITHUB_ENV"
+
+      - name: Daftarkan ke server
+        env:
+          HOOK_TOKEN: ${{ secrets.RELEASE_HOOK_TOKEN }}
+          NOTES: ${{ steps.ver.outputs.notes }}
+        run: |
+          if [ -z "$HOOK_TOKEN" ]; then echo "::error::Secret RELEASE_HOOK_TOKEN belum diisi"; exit 1; fi
+          CODE=${{ steps.ver.outputs.code }}
+          BODY=$(jq -n \
+            --arg name "${{ steps.ver.outputs.name }}" --argjson code "$CODE" \
+            --arg url "$APK_URL" --arg sha "$SHA256" --argjson size "$SIZE" \
+            --arg notes "$NOTES" --arg tag "$GITHUB_REF_NAME" \
+            '{version_name:$name, version_code:$code, min_version_code:$code,
+              apk_url:$url, apk_sha256:$sha, apk_size:$size, release_notes:$notes, tag:$tag}')
+
+          # Server mengunduh APK dari GitHub; proxy bisa memutus respons lebih dulu,
+          # jadi hasil akhirnya dipastikan lewat endpoint versi.
+          curl -sS --max-time 120 -X POST "$HOOK_URL" \
+            -H "Content-Type: application/json" -H "X-Release-Token: $HOOK_TOKEN" \
+            -d "$BODY" -w '\nHTTP %{http_code}\n' || true
+
+          for i in $(seq 1 20); do
+            GOT=$(curl -s --max-time 15 "$VERSION_URL" | jq -r '.data.version_code // 0')
+            if [ "$GOT" = "$CODE" ]; then echo "Server sudah memakai build $CODE"; exit 0; fi
+            echo "Menunggu server ($i/20), sekarang build $GOT"; sleep 15
+          done
+          echo "::error::Server belum mendaftarkan build $CODE. Cek log server atau rilis ulang lewat CMS."
+          exit 1
+
+      - name: Bersihkan keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks" android/key.properties

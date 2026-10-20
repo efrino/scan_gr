@@ -64,6 +64,114 @@ class AppVersion extends ResourceController
     }
 
     /**
+     * Dipanggil GitHub Actions setelah membuat GitHub Release.
+     * Mengunduh salinan APK ke public/apk, memverifikasi isinya, lalu mendaftarkan
+     * versi ke app_versions. Dilindungi header X-Release-Token (RELEASE_HOOK_TOKEN di .env).
+     */
+    public function releaseHook()
+    {
+        date_default_timezone_set('Asia/Jakarta');
+
+        $expected = (string) env('RELEASE_HOOK_TOKEN', '');
+        $given    = (string) $this->request->getHeaderLine('X-Release-Token');
+        if ($expected === '' || ! hash_equals($expected, $given)) {
+            return $this->respond(['status' => false, 'message' => 'Token rilis tidak valid.'], 401);
+        }
+
+        $in   = (array) ($this->request->getJSON(true) ?? []);
+        $name = (string) ($in['version_name'] ?? '');
+        $code = (int) ($in['version_code'] ?? 0);
+        $min  = (int) ($in['min_version_code'] ?? $code);
+        $url  = (string) ($in['apk_url'] ?? '');
+        $sha  = strtolower((string) ($in['apk_sha256'] ?? ''));
+        $size = (int) ($in['apk_size'] ?? 0);
+
+        if (! preg_match('/^\d+\.\d+\.\d+$/', $name) || $code <= 0 || $min <= 0 || $min > $code
+            || ! preg_match('#^https://github\.com/efrino/scan_gr/releases/download/#', $url)
+            || ! preg_match('/^[a-f0-9]{64}$/', $sha)) {
+            return $this->respond(['status' => false, 'message' => 'Data rilis tidak valid.'], 422);
+        }
+
+        $db = db_connect();
+        if ($db->table('app_versions')->where('platform', 'android')->where('version_code', $code)->countAllResults() > 0) {
+            return $this->respond(['status' => true, 'message' => "Build {$code} sudah terdaftar."]);
+        }
+        $latest = (int) ($db->table('app_versions')->where('platform', 'android')
+            ->selectMax('version_code')->get()->getRow()->version_code ?? 0);
+        if ($code <= $latest) {
+            return $this->respond(['status' => false, 'message' => "Build {$code} harus lebih besar dari {$latest}."], 409);
+        }
+
+        // Unduhan ±70 MB bisa lebih lama dari batas proxy; tetap lanjut walau
+        // koneksi pemanggil terputus (Actions memastikan hasil lewat api/app/version).
+        ignore_user_abort(true);
+        set_time_limit(600);
+
+        $dir = FCPATH . 'apk/';
+        if (! is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
+        $fileName = "scan_gr-{$name}-{$code}.apk";
+        $tmp      = $dir . $fileName . '.part';
+        $path     = $dir . $fileName;
+
+        try {
+            $fh = fopen($tmp, 'wb');
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_FILE           => $fh,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_CONNECTTIMEOUT => 20,
+                CURLOPT_TIMEOUT        => 540,
+                CURLOPT_USERAGENT      => 'portal-supplier-release-hook',
+            ]);
+            $ok     = curl_exec($ch);
+            $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $err    = curl_error($ch);
+            curl_close($ch);
+            fclose($fh);
+
+            if (! $ok || $status !== 200) {
+                throw new \RuntimeException("Gagal unduh APK dari GitHub (HTTP {$status} {$err}).");
+            }
+            if ($size > 0 && filesize($tmp) !== $size) {
+                throw new \RuntimeException('Ukuran APK tidak cocok.');
+            }
+            if (hash_file('sha256', $tmp) !== $sha) {
+                throw new \RuntimeException('sha256 APK tidak cocok.');
+            }
+            $apk = \App\Libraries\ApkInfo::read($tmp);
+            if ($apk->package !== 'com.example.scan_gr' || $apk->versionCode !== $code || $apk->versionName !== $name) {
+                throw new \RuntimeException("Isi APK ({$apk->package} {$apk->versionName}/{$apk->versionCode}) tidak sesuai data rilis.");
+            }
+            rename($tmp, $path);
+            @chmod($path, 0644);
+        } catch (\Throwable $e) {
+            @unlink($tmp);
+            log_message('error', '[ReleaseHook] ' . $e->getMessage());
+
+            return $this->respond(['status' => false, 'message' => $e->getMessage()], 502);
+        }
+
+        $db->table('app_versions')->insert([
+            'platform'         => 'android',
+            'version_code'     => $code,
+            'version_name'     => $name,
+            'min_version_code' => $min,
+            'apk_url'          => $url,
+            'apk_url_local'    => base_url('apk/' . $fileName),
+            'apk_size'         => filesize($path),
+            'apk_sha256'       => $sha,
+            'release_notes'    => trim((string) ($in['release_notes'] ?? '')) ?: null,
+            'is_active'        => 1,
+            'released_at'      => date('Y-m-d H:i:s'),
+            'created_by'       => 'github-actions',
+        ]);
+
+        return $this->respond(['status' => true, 'message' => "Versi {$name} (build {$code}) terdaftar."], 201);
+    }
+
+    /**
      * Catat versi terpasang per device untuk statistik di CMS.
      * Gagal mencatat tidak boleh menggagalkan cek versi.
      */
