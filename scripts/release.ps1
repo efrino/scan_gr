@@ -38,8 +38,13 @@ if ((git rev-parse --abbrev-ref HEAD) -ne 'main') { Fail 'Jalankan dari branch m
 git fetch -q origin
 if ((git rev-parse HEAD) -ne (git rev-parse origin/main)) { Fail 'Branch main lokal belum sama dengan origin/main (pull/push dulu).' }
 if (-not (Test-Path 'android/key.properties')) { Fail 'android/key.properties tidak ada; APK tidak bisa ditandatangani keystore release.' }
-gh release view $Tag -R $Repo *> $null
-if ($LASTEXITCODE -eq 0) { Fail "Release $Tag sudah ada di GitHub." }
+# PowerShell 5.1 menganggap stderr program yang dialihkan sebagai error fatal saat
+# ErrorActionPreference = Stop, padahal "release not found" adalah hasil yang diharapkan.
+$ErrorActionPreference = 'Continue'
+gh release view $Tag -R $Repo 2>&1 | Out-Null
+$exists = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = 'Stop'
+if ($exists) { Fail "Release $Tag sudah ada di GitHub." }
 
 $token = $env:RELEASE_HOOK_TOKEN
 if (-not $token) {
