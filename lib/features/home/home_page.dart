@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/constants/api_constants.dart';
 import '../../core/services/api_client.dart';
@@ -20,6 +21,7 @@ class _HomePageState extends State<HomePage> {
   int _pendingCount = 0;
   bool _syncing = false;
   List<Map<String, dynamic>> _pendingItems = [];
+  String _appVersion = '';
 
   // Sesi scan terakhir (hasil pengelompokan)
   List<Map<String, dynamic>> _lastSession = [];
@@ -33,6 +35,10 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _init();
+    PackageInfo.fromPlatform().then((p) {
+      if (!mounted) return;
+      setState(() => _appVersion = 'v${p.version} (${p.buildNumber})');
+    });
   }
 
   Future<void> _init() async {
@@ -78,8 +84,11 @@ class _HomePageState extends State<HomePage> {
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.cloud_done_rounded,
-                      color: Colors.white, size: 20),
+                  const Icon(
+                    Icons.cloud_done_rounded,
+                    color: Colors.white,
+                    size: 20,
+                  ),
                   const SizedBox(width: 10),
                   Text(
                     '$synced scan berhasil disinkronkan',
@@ -126,9 +135,13 @@ class _HomePageState extends State<HomePage> {
       debugPrint('[HomePage] ✗ 401 – sudah redirect ke login');
       return; // Sesi tidak valid — sudah redirect ke login
     } on ApiResponseException catch (e) {
-      debugPrint('[HomePage] ✗ Server return non-JSON (HTML?) HTTP ${e.statusCode}');
+      debugPrint(
+        '[HomePage] ✗ Server return non-JSON (HTML?) HTTP ${e.statusCode}',
+      );
       debugPrint('[HomePage]   Kemungkinan endpoint salah atau server error');
-      debugPrint('[HomePage]   body awal: ${e.body.substring(0, e.body.length.clamp(0, 100))}');
+      debugPrint(
+        '[HomePage]   body awal: ${e.body.substring(0, e.body.length.clamp(0, 100))}',
+      );
       // Biarkan kosong; tampilkan "Belum ada scan" ke user
     } catch (e) {
       debugPrint('[HomePage] ✗ Error _fetchLastSession: $e');
@@ -281,9 +294,10 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               const SizedBox(height: 4),
-              const Text(
-                'Selamat datang di Sistem Scan DN',
-                style: TextStyle(fontSize: 14, color: Colors.black54),
+              Text(
+                'Selamat datang di Sistem Scan DN'
+                '${_appVersion.isEmpty ? '' : ' · $_appVersion'}',
+                style: const TextStyle(fontSize: 14, color: Colors.black54),
               ),
               const SizedBox(height: 24),
 
@@ -326,8 +340,7 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                   TextButton(
-                    onPressed: () =>
-                        Navigator.pushNamed(context, '/history'),
+                    onPressed: () => Navigator.pushNamed(context, '/history'),
                     child: const Text(
                       'Lihat Semua',
                       style: TextStyle(
@@ -398,10 +411,7 @@ class _HomePageState extends State<HomePage> {
         const SizedBox(height: 8),
 
         // Item list (tampilkan maks 5, sisanya kolaps)
-        _SessionItemList(
-          items: _lastSession,
-          fmtTime: _fmtTime,
-        ),
+        _SessionItemList(items: _lastSession, fmtTime: _fmtTime),
       ],
     );
   }
@@ -540,12 +550,18 @@ class _PendingBanner extends StatelessWidget {
             final item = entry.value;
             final hasLabelbox = item['has_labelbox_data'] == true;
             final title = hasLabelbox
-                ? (item['material']?.toString() ?? item['barcode']?.toString() ?? '-')
+                ? (item['material']?.toString() ??
+                      item['barcode']?.toString() ??
+                      '-')
                 : (item['barcode']?.toString() ?? '-');
             final subtitle = hasLabelbox
-                ? (item['id_box_label']?.toString() ?? item['barcode']?.toString() ?? '')
+                ? (item['id_box_label']?.toString() ??
+                      item['barcode']?.toString() ??
+                      '')
                 : 'Data belum diambil dari server';
-            final qty = hasLabelbox ? item['qty']?.toString() ?? item['quantity']?.toString() : null;
+            final qty = hasLabelbox
+                ? item['qty']?.toString() ?? item['quantity']?.toString()
+                : null;
             final cachedAt = _fmtCachedAt(item['cached_at']);
             final isLast = idx == visibleItems.length - 1 && extra == 0;
 
@@ -642,8 +658,7 @@ class _PendingBanner extends StatelessWidget {
                     ],
                   ),
                 ),
-                if (!isLast)
-                  Divider(height: 1, color: Colors.amber.shade100),
+                if (!isLast) Divider(height: 1, color: Colors.amber.shade100),
               ],
             );
           }),
@@ -749,7 +764,9 @@ class _SessionHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dateLabel = fmtDateShort(sessionEnd);
-    final timeRange = sessionStart != null && sessionEnd != null &&
+    final timeRange =
+        sessionStart != null &&
+            sessionEnd != null &&
             sessionStart!.millisecondsSinceEpoch !=
                 sessionEnd!.millisecondsSinceEpoch
         ? '${fmtTime(sessionStart)} – ${fmtTime(sessionEnd)}'
@@ -1004,10 +1021,7 @@ class _SessionItem extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 2,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
                   color: Colors.orange.shade50,
                   borderRadius: BorderRadius.circular(6),

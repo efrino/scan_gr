@@ -1,0 +1,312 @@
+openapi: 3.0.3
+info:
+  title: GR Scanner - App Version API
+  version: 1.0.0
+  description: |
+    API untuk cek versi aplikasi GR Scanner (Android) dan mengarahkan user
+    ke APK terbaru.
+
+    Alur di aplikasi:
+    1. Saat app dibuka / kembali ke depan, app memanggil `GET /app/version`.
+    2. Jika `version_code` app < `min_version_code` → layar wajib update.
+    3. Jika `version_code` app < `version_code` terbaru → dialog update opsional.
+    4. App mengunduh APK dari `apk_url` (atau `apk_url_local` saat di jaringan lokal).
+
+    Catatan umum:
+    - Format respons mengikuti API yang sudah ada: `{ status, message, data }`.
+    - Endpoint ini TIDAK memakai token (dipanggil sebelum login).
+    - Harus tersedia di dua server dengan database yang sama:
+      mspin (utama) dan 192.168.10.55 (fallback lokal).
+servers:
+  - url: https://mspin.newarmada.biz/portal-supplier/public/api
+    description: Server utama (internet)
+  - url: http://192.168.10.55/portal-supplier/public/api
+    description: Server lokal (fallback LAN)
+
+paths:
+  /app/version:
+    get:
+      summary: Ambil info versi aplikasi terbaru
+      description: |
+        Mengembalikan baris terbaru dari tabel `app_versions` untuk platform
+        yang diminta (urut `version_code` terbesar, `is_active = 1`).
+        Publik, tanpa Authorization header.
+      operationId: getLatestAppVersion
+      security: []
+      parameters:
+        - name: platform
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [android]
+            default: android
+        - name: current_version_code
+          in: query
+          required: false
+          description: |
+            Versi app yang sedang terpasang di device. Opsional, hanya untuk
+            log/monitoring di backend (berapa device belum update).
+          schema:
+            type: integer
+            example: 4
+      responses:
+        '200':
+          description: Info versi ditemukan
+          headers:
+            Cache-Control:
+              description: Disarankan `no-cache` atau max-age pendek (≤ 60 detik).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppVersionResponse'
+              example:
+                status: true
+                message: Versi aplikasi ditemukan.
+                data:
+                  platform: android
+                  version_code: 5
+                  version_name: 1.2.0
+                  min_version_code: 4
+                  apk_url: https://mspin.newarmada.biz/portal-supplier/public/apk/scan_gr-1.2.0.apk
+                  apk_url_local: http://192.168.10.55/portal-supplier/public/apk/scan_gr-1.2.0.apk
+                  apk_size: 69284498
+                  apk_sha256: 3f1c9a0e5b7d2c4f6a8e1b3d5f7a9c0e2b4d6f8a1c3e5b7d9f0a2c4e6b8d0f1a
+                  release_notes: |-
+                    - Fallback otomatis ke server lokal
+                    - Perbaikan antrian scan tidak terhapus
+                  released_at: '2026-10-20 16:00:00'
+        '404':
+          description: Belum ada versi aktif untuk platform ini
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: false
+                message: Versi aplikasi belum tersedia.
+        '500':
+          description: Error server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /app/version/publish:
+    post:
+      summary: (Opsional) Daftarkan versi baru
+      description: |
+        Untuk admin/IT saat merilis APK baru. Boleh diganti dengan insert manual
+        ke tabel `app_versions` atau halaman admin web yang sudah ada.
+        Wajib token admin.
+      operationId: publishAppVersion
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishRequest'
+            example:
+              platform: android
+              version_code: 5
+              version_name: 1.2.0
+              min_version_code: 4
+              apk_file: scan_gr-1.2.0.apk
+              apk_size: 69284498
+              apk_sha256: 3f1c9a0e5b7d2c4f6a8e1b3d5f7a9c0e2b4d6f8a1c3e5b7d9f0a2c4e6b8d0f1a
+              release_notes: '- Fallback otomatis ke server lokal'
+      responses:
+        '200':
+          description: Versi tersimpan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppVersionResponse'
+        '401':
+          description: Token tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            Validasi gagal. Contoh: `version_code` tidak lebih besar dari versi
+            terakhir, atau `min_version_code` > `version_code`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: false
+                message: version_code harus lebih besar dari versi terakhir (4).
+
+  /apk/{file}:
+    get:
+      summary: Unduh file APK
+      description: |
+        File statis, di LUAR prefix `/api` (contoh:
+        `/portal-supplier/public/apk/scan_gr-1.2.0.apk`).
+        Disalin ke kedua server. Tanpa token supaya bisa diunduh browser /
+        installer Android.
+      operationId: downloadApk
+      security: []
+      servers:
+        - url: https://mspin.newarmada.biz/portal-supplier/public
+        - url: http://192.168.10.55/portal-supplier/public
+      parameters:
+        - name: file
+          in: path
+          required: true
+          schema:
+            type: string
+            example: scan_gr-1.2.0.apk
+      responses:
+        '200':
+          description: File APK
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: application/vnd.android.package-archive
+            Content-Length:
+              schema:
+                type: integer
+          content:
+            application/vnd.android.package-archive:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: File tidak ditemukan
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    AppVersion:
+      type: object
+      required: [platform, version_code, version_name, min_version_code, apk_url]
+      properties:
+        platform:
+          type: string
+          example: android
+        version_code:
+          type: integer
+          description: |
+            Angka build, selalu naik tiap rilis. Sama dengan angka setelah `+`
+            di `pubspec.yaml` (contoh `1.2.0+5` → 5). App membandingkan angka ini.
+          example: 5
+        version_name:
+          type: string
+          description: Label versi untuk ditampilkan ke user.
+          example: 1.2.0
+        min_version_code:
+          type: integer
+          description: |
+            Versi minimum yang masih boleh dipakai. Device dengan versi di bawah
+            ini wajib update (layar blokir). Isi sama dengan versi lama jika
+            update hanya opsional.
+          example: 4
+        apk_url:
+          type: string
+          format: uri
+          description: Link unduh APK di server utama (HTTPS).
+        apk_url_local:
+          type: string
+          format: uri
+          nullable: true
+          description: Link unduh APK di server lokal. Dipakai app jika server utama gagal.
+        apk_size:
+          type: integer
+          nullable: true
+          description: Ukuran file dalam byte, untuk progress bar.
+          example: 69284498
+        apk_sha256:
+          type: string
+          nullable: true
+          description: SHA-256 file APK (hex, huruf kecil), untuk cek file tidak rusak.
+        release_notes:
+          type: string
+          nullable: true
+          description: Daftar perubahan, ditampilkan di dialog update. Teks biasa.
+        released_at:
+          type: string
+          description: Waktu rilis, format `YYYY-MM-DD HH:mm:ss` (WIB).
+          example: '2026-10-20 16:00:00'
+
+    AppVersionResponse:
+      type: object
+      properties:
+        status:
+          type: boolean
+          example: true
+        message:
+          type: string
+        data:
+          $ref: '#/components/schemas/AppVersion'
+
+    PublishRequest:
+      type: object
+      required: [platform, version_code, version_name, min_version_code, apk_file]
+      properties:
+        platform:
+          type: string
+          example: android
+        version_code:
+          type: integer
+        version_name:
+          type: string
+        min_version_code:
+          type: integer
+        apk_file:
+          type: string
+          description: Nama file yang sudah diunggah ke folder `apk/` di kedua server.
+        apk_size:
+          type: integer
+        apk_sha256:
+          type: string
+        release_notes:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: boolean
+          example: false
+        message:
+          type: string
+
+# ---------------------------------------------------------------------------
+# Usulan tabel (MySQL):
+#
+# CREATE TABLE app_versions (
+#   id               INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+#   platform         VARCHAR(20)  NOT NULL DEFAULT 'android',
+#   version_code     INT UNSIGNED NOT NULL,
+#   version_name     VARCHAR(20)  NOT NULL,
+#   min_version_code INT UNSIGNED NOT NULL,
+#   apk_file         VARCHAR(255) NOT NULL,
+#   apk_size         BIGINT UNSIGNED NULL,
+#   apk_sha256       CHAR(64)     NULL,
+#   release_notes    TEXT         NULL,
+#   is_active        TINYINT(1)   NOT NULL DEFAULT 1,
+#   released_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+#   created_by       VARCHAR(50)  NULL,
+#   UNIQUE KEY uq_platform_version (platform, version_code)
+# );
+#
+# Query untuk GET /app/version:
+#   SELECT * FROM app_versions
+#   WHERE platform = ? AND is_active = 1
+#   ORDER BY version_code DESC LIMIT 1;
+#
+# apk_url / apk_url_local disusun backend dari apk_file + base URL tiap server.
+# ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import 'features/auth/login_page.dart';
 import 'features/home/home_page.dart';
 import 'features/scan/scan_page.dart';
 import 'features/history/history_page.dart';
+import 'features/update/update_gate.dart';
 
 void main() {
   runApp(const MyApp());
@@ -23,6 +24,8 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
       ),
+      // Cek versi & ajakan update di atas semua halaman.
+      builder: (context, child) => UpdateGate(child: child!),
       initialRoute: '/',
       routes: {
         '/': (context) => const SplashScreen(),
