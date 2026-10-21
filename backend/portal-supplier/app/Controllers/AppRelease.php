@@ -84,6 +84,8 @@ class AppRelease extends BaseController
             'stats'         => $stats,
             'devices'       => $devices,
             'githubReady'   => (new GithubRelease())->isConfigured(),
+            'downloadUrl'   => base_url('app/download'),
+            'fonnteReady'   => env('FONNTE_TOKEN', '') !== '',
         ];
 
         return $this->_render_page('app_release/index', $data);
@@ -255,6 +257,194 @@ class AppRelease extends BaseController
         $db->table('app_versions')->where('id', $id)->update(['is_active' => $active]);
 
         return $this->back('success', "Versi {$row->version_name} " . ($active ? 'diaktifkan.' : 'dinonaktifkan.'));
+    }
+
+    // ── Bagikan aplikasi ──────────────────────────────────────────────────────
+
+    /** QR Code link unduh tetap (app/download). ?download=1 untuk unduh PNG. */
+    public function qr()
+    {
+        if ($denied = $this->guard()) {
+            return $denied;
+        }
+
+        $qr = \Endroid\QrCode\QrCode::create(base_url('app/download'))
+            ->setSize(600)
+            ->setMargin(24);
+        $png = (new \Endroid\QrCode\Writer\PngWriter())->write($qr)->getString();
+
+        $this->response->setHeader('Content-Type', 'image/png')
+            ->setHeader('Cache-Control', 'max-age=3600');
+        if ($this->request->getGet('download')) {
+            $this->response->setHeader('Content-Disposition', 'attachment; filename="qr-gr-scanner.png"');
+        }
+
+        return $this->response->setBody($png);
+    }
+
+    // ── WhatsApp lewat wa-gateway lokal (127.0.0.1) ───────────────────────
+
+    /** Panggil wa-gateway lokal. @return array{0:int,1:array<string,mixed>} */
+    private function gateway(string $method, string $path, ?array $body = null, int $timeout = 15): array
+    {
+        $ch = curl_init(rtrim((string) env('WA_GATEWAY_URL', 'http://127.0.0.1:3100'), '/') . $path);
+        $headers = ['X-Gateway-Token: ' . env('WA_GATEWAY_TOKEN', '')];
+        if ($body !== null) {
+            $headers[] = 'Content-Type: application/json';
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body));
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_CUSTOMREQUEST  => $method,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 3,
+            CURLOPT_TIMEOUT        => $timeout,
+            CURLOPT_HTTPHEADER     => $headers,
+        ]);
+        $raw    = curl_exec($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($raw === false) {
+            return [0, ['ok' => false, 'error' => 'Gateway WhatsApp tidak berjalan di server.']];
+        }
+
+        return [$status, json_decode($raw, true) ?: ['ok' => false, 'error' => 'Respons gateway tidak valid.']];
+    }
+
+    /** Status pengirim + QR pairing (data URI PNG) untuk dipoll halaman CMS. */
+    public function waStatus()
+    {
+        if (! $this->ionAuth->loggedIn() || ! $this->ionAuth->isAdmin()) {
+            return $this->response->setStatusCode(403)->setJSON(['ok' => false, 'error' => 'Sesi habis. Muat ulang halaman.']);
+        }
+
+        [, $s] = $this->gateway('GET', '/status');
+        $out = [
+            'ok'    => (bool) ($s['ok'] ?? false),
+            'state' => $s['state'] ?? 'down',
+            'me'    => $s['me'] ?? null,
+            'error' => $s['error'] ?? null,
+            'qr'    => null,
+        ];
+        if (! empty($s['qr'])) {
+            $qr        = \Endroid\QrCode\QrCode::create($s['qr'])->setSize(320)->setMargin(12);
+            $out['qr'] = (new \Endroid\QrCode\Writer\PngWriter())->write($qr)->getDataUri();
+        }
+
+        return $this->response->setHeader('Cache-Control', 'no-store')->setJSON($out);
+    }
+
+    /** Putuskan WhatsApp pengirim (untuk ganti nomor). */
+    public function waLogout()
+    {
+        if (! $this->ionAuth->loggedIn() || ! $this->ionAuth->isAdmin()) {
+            return $this->response->setStatusCode(403)->setJSON(['ok' => false, 'error' => 'Sesi habis. Muat ulang halaman.']);
+        }
+        [, $res] = $this->gateway('POST', '/logout', []);
+
+        return $this->response->setJSON($res);
+    }
+
+    /**
+     * Kirim pesan ke SATU nomor. Halaman CMS memanggil ini berurutan per nomor
+     * (dengan jeda) supaya tiap request selesai jauh di bawah batas waktu proxy.
+     */
+    public function waSendOne()
+    {
+        if (! $this->ionAuth->loggedIn() || ! $this->ionAuth->isAdmin()) {
+            return $this->response->setStatusCode(403)->setJSON(['ok' => false, 'error' => 'Sesi habis. Muat ulang halaman.']);
+        }
+
+        $message = trim((string) $this->request->getPost('message'));
+        [$numbers, $invalid] = self::parseNumbers((string) $this->request->getPost('number'));
+        if ($invalid || count($numbers) !== 1) {
+            return $this->response->setStatusCode(422)->setJSON(['ok' => false, 'error' => 'Nomor tidak valid']);
+        }
+        if ($message === '') {
+            return $this->response->setStatusCode(422)->setJSON(['ok' => false, 'error' => 'Pesan kosong']);
+        }
+
+        // Jalur utama Fonnte (jika FONNTE_TOKEN diisi), cadangan wa-gateway lokal.
+        $errors = [];
+        if (env('FONNTE_TOKEN', '') !== '') {
+            [$ok, $err] = $this->sendFonnte($numbers[0], $message);
+            if ($ok) {
+                return $this->logWa($numbers[0], 'Fonnte', true);
+            }
+            $errors[] = 'Fonnte: ' . $err;
+        }
+
+        [$status, $res] = $this->gateway('POST', '/send', ['to' => $numbers, 'message' => $message], 45);
+        $result = $res['results'][0] ?? ['ok' => false, 'error' => $res['error'] ?? "HTTP {$status}"];
+        if ($result['ok']) {
+            return $this->logWa($numbers[0], 'nomor cadangan', true);
+        }
+        $errors[] = 'Nomor cadangan: ' . ($result['error'] ?? 'gagal');
+
+        return $this->logWa($numbers[0], null, false, implode('; ', $errors));
+    }
+
+    private function logWa(string $to, ?string $via, bool $ok, ?string $error = null)
+    {
+        log_message('info', "[AppRelease] WA ke {$to}: " . ($ok ? "terkirim via {$via}" : "gagal ({$error})"));
+
+        return $this->response->setJSON(['ok' => $ok, 'to' => $to, 'via' => $via, 'error' => $error]);
+    }
+
+    /** Kirim ke satu nomor lewat Fonnte. @return array{0:bool,1:string} */
+    private function sendFonnte(string $to, string $message): array
+    {
+        $ch = curl_init('https://api.fonnte.com/send');
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT        => 25,
+            CURLOPT_HTTPHEADER     => ['Authorization: ' . env('FONNTE_TOKEN')],
+            CURLOPT_POSTFIELDS     => ['target' => $to, 'message' => $message, 'countryCode' => '62'],
+        ]);
+        $body   = curl_exec($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err    = curl_error($ch);
+        curl_close($ch);
+
+        if ($body === false) {
+            return [false, $err ?: 'tidak bisa menghubungi Fonnte'];
+        }
+        $res = json_decode($body, true) ?: [];
+
+        return empty($res['status'])
+            ? [false, (string) ($res['reason'] ?? "HTTP {$status}")]
+            : [true, ''];
+    }
+
+    /**
+     * Normalisasi nomor ke format 62xxxxxxxxxx. Pemisah: baris baru, koma, titik koma.
+     *
+     * @return array{0: list<string>, 1: list<string>} [nomor valid, nomor tidak valid]
+     */
+    public static function parseNumbers(string $raw): array
+    {
+        $valid = $invalid = [];
+        foreach (preg_split('/[\r\n,;]+/', $raw) as $item) {
+            $item = trim($item);
+            if ($item === '') {
+                continue;
+            }
+            $digits = preg_replace('/\D/', '', $item);
+            if (str_starts_with($digits, '0')) {
+                $digits = '62' . substr($digits, 1);
+            } elseif (str_starts_with($digits, '8')) {
+                $digits = '62' . $digits;
+            }
+            if (preg_match('/^628\d{7,12}$/', $digits)) {
+                $valid[$digits] = $digits;
+            } else {
+                $invalid[] = $item;
+            }
+        }
+
+        return [array_values($valid), $invalid];
     }
 
     // ── Upload bertahap ───────────────────────────────────────────────────────

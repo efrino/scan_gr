@@ -72,14 +72,26 @@ jobs:
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
           echo "file=scan_gr-$NAME-$CODE.apk" >> "$GITHUB_OUTPUT"
 
-          # Catatan rilis: pesan annotated tag, atau commit sejak tag sebelumnya.
-          NOTES=$(git tag -l --format='%(contents)' "$TAG" | sed '/^-----BEGIN/,$d')
-          if [ -z "$(echo "$NOTES" | tr -d '[:space:]')" ] || [ "$NOTES" = "$(git log -1 --format=%B "$TAG")" ]; then
+          # Catatan rilis (tampil ke operator di dialog update & halaman unduh):
+          # 1. Pesan annotated tag  (git tag -a v1.2.3 -m "...").
+          #    actions/checkout mengganti tag jadi ringan, jadi objek tag diambil ulang.
+          # 2. Jika tag tanpa pesan: commit feat:/fix: sejak tag sebelumnya, tanpa awalan teknis.
+          # 3. Jika tidak ada: kalimat umum.
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG" >/dev/null 2>&1 || true
+          NOTES=""
+          if [ "$(git cat-file -t "$TAG")" = "tag" ]; then
+            NOTES=$(git tag -l --format='%(contents)' "$TAG" | sed '/^-----BEGIN/,$d' | sed -e 's/[[:space:]]*$//' | sed -e '/./,$!d')
+          fi
+          if [ -z "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
             PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
             RANGE=${PREV:+$PREV..}$TAG
-            NOTES=$(git log --no-merges --format='- %s' "$RANGE" | grep -v '^- chore' | head -20)
+            NOTES=$(git log --no-merges --format='%s' "$RANGE" \
+              | grep -Ei '^(feat|fix)(\([^)]*\))?!?:' \
+              | sed -E 's/^[a-zA-Z]+(\([^)]*\))?!?:[[:space:]]*//' \
+              | awk '{ print "- " toupper(substr($0,1,1)) substr($0,2) }' \
+              | head -10)
           fi
-          [ -z "$NOTES" ] && NOTES="Versi $NAME."
+          [ -z "$NOTES" ] && NOTES="Perbaikan dan peningkatan stabilitas aplikasi."
           { echo "notes<<__END__"; echo "$NOTES"; echo "__END__"; } >> "$GITHUB_OUTPUT"
           echo "Versi $NAME (build $CODE)"
 

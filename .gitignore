@@ -48,3 +48,6 @@ app.*.map.json
 *.claude
 
 
+
+# Gateway WhatsApp: tidak dipublikasikan di repo publik (kode ada di server 55 ~/wa-gateway)
+backend/wa-gateway/
