@@ -51,3 +51,6 @@ app.*.map.json
 
 # Gateway WhatsApp: tidak dipublikasikan di repo publik (kode ada di server 55 ~/wa-gateway)
 backend/wa-gateway/
+
+# Konfigurasi Firebase; di CI diisi dari secret GOOGLE_SERVICES_JSON
+android/app/google-services.json

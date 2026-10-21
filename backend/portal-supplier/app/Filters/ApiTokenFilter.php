@@ -3,6 +3,7 @@
 namespace App\Filters;
 
 use App\Libraries\ApiTokens;
+use App\Libraries\SapHealth;
 use App\Models\M_auth;
 use CodeIgniter\Filters\FilterInterface;
 use CodeIgniter\HTTP\RequestInterface;
@@ -69,11 +70,14 @@ class ApiTokenFilter implements FilterInterface
     }
 
     /**
-     * Sisipkan build GR Scanner terbaru di setiap respons API, supaya app tahu
+     * Sisipkan status SAP dan build GR Scanner terbaru di setiap respons API, supaya app tahu
      * ada update tanpa menunggu jadwal cek versi. Di-cache 60 detik.
      */
     public function after(RequestInterface $request, ResponseInterface $response, $arguments = null)
     {
+        // Status SAP untuk banner di app (gangguan dideteksi SapHealth).
+        $response->setHeader('X-System-Status', SapHealth::isDown() ? 'sap=down' : 'sap=ok');
+
         $latest = cache('app_latest_build_android');
         if ($latest === null) {
             try {

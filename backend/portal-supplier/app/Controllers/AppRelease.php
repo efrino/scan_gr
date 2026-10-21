@@ -3,7 +3,9 @@
 namespace App\Controllers;
 
 use App\Libraries\ApkInfo;
+use App\Libraries\Fcm;
 use App\Libraries\GithubRelease;
+use App\Libraries\SapHealth;
 use IonAuth\Libraries\IonAuth;
 
 /**
@@ -119,6 +121,8 @@ class AppRelease extends BaseController
             'githubReady'   => (new GithubRelease())->isConfigured(),
             'downloadUrl'   => base_url('app/download'),
             'fonnteReady'   => env('FONNTE_TOKEN', '') !== '',
+            'fcmReady'      => Fcm::configured(),
+            'sapDown'       => SapHealth::isDown(),
             'can'           => [
                 'create' => $this->can('Create'),
                 'update' => $this->can('Update'),
@@ -497,6 +501,49 @@ class AppRelease extends BaseController
     private const CHUNKS_MAX = 200;          // ±128 MB pada 640 KB per potong
 
     /** Terima satu potongan APK. Dipanggil berurutan oleh JS di halaman CMS. */
+    /**
+     * Kirim push notification ke semua device (topik) atau satu device.
+     */
+    public function pushSend()
+    {
+        if ($denied = $this->guardJson('Update')) {
+            return $denied;
+        }
+
+        $title  = mb_substr(trim((string) $this->request->getPost('title')), 0, 100);
+        $body   = mb_substr(trim((string) $this->request->getPost('body')), 0, 500);
+        $target = trim((string) $this->request->getPost('target'));
+        if ($title === '' || $body === '') {
+            return $this->response->setStatusCode(422)->setJSON(['ok' => false, 'error' => 'Judul dan isi wajib diisi']);
+        }
+
+        $token = null;
+        if ($target !== '' && $target !== 'all') {
+            $row   = db_connect()->table('app_devices')->select('fcm_token')->where('device_id', $target)->get()->getRowArray();
+            $token = $row['fcm_token'] ?? null;
+            if (! $token) {
+                return $this->response->setStatusCode(422)->setJSON(['ok' => false, 'error' => 'Device belum terdaftar untuk notifikasi']);
+            }
+        }
+
+        $ok = Fcm::send($title, $body, ['type' => 'announcement'], $token);
+        log_message('notice', 'Push CMS oleh ' . ($this->ionAuth->user()->row()->email ?? '?') . ' ke ' . ($token ? $target : 'semua') . ': ' . ($ok ? 'ok' : 'gagal'));
+
+        return $this->response->setJSON($ok ? ['ok' => true] : ['ok' => false, 'error' => 'FCM menolak, cek log server']);
+    }
+
+    /** Tandai status SAP manual (gangguan / normal) dan kabari semua device. */
+    public function sapStatus()
+    {
+        if ($denied = $this->guardJson('Update')) {
+            return $denied;
+        }
+        $down = $this->request->getPost('state') === 'down';
+        SapHealth::setDown($down, 'CMS ' . ($this->ionAuth->user()->row()->email ?? '?'));
+
+        return $this->response->setJSON(['ok' => true, 'down' => $down]);
+    }
+
     public function chunk()
     {
         if ($denied = $this->guardJson('Create')) {

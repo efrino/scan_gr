@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/constants/api_constants.dart';
 import '../../core/services/api_client.dart';
 import '../../core/services/app_update_service.dart';
+import '../../core/services/notification_service.dart';
 import '../../core/services/pending_scan_service.dart';
 
 class LoginPage extends StatefulWidget {
@@ -140,6 +141,7 @@ class _LoginPageState extends State<LoginPage> {
       await prefs.setString('nik', nik);
 
       debugPrint('[Login] ✓ sesi tersimpan (nik=$nik) → navigasi ke /home');
+      NotificationService.registerToken(); // tidak ditunggu
 
       setState(() => isLoading = false);
 

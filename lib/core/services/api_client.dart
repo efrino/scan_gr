@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import '../constants/api_constants.dart';
+import 'notification_service.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
@@ -48,7 +49,7 @@ class ApiClient {
   // ── Unauthenticated POST (login) ──────────────────────────────────────────
 
   static Future<http.Response> postNoAuth(Uri uri, {Object? body}) async {
-    debugPrint('[ApiClient]   body: $body');
+    // Body tidak dicatat: berisi password login.
     final response = await _withFallback(
       'POST (no-auth)',
       uri,
@@ -237,6 +238,14 @@ class ApiClient {
     debugPrint('[ApiClient]   body: ${response.body}');
     final build = int.tryParse(response.headers['x-app-latest-build'] ?? '');
     if (build != null && build > latestBuild.value) latestBuild.value = build;
+    // `X-System-Status: sap=down|ok` hanya ada di respons yang lewat filter token.
+    final status = response.headers['x-system-status'];
+    if (status != null) {
+      NotificationService.applySapStatus(
+        status.contains('sap=down') ? 'down' : 'ok',
+        null,
+      );
+    }
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

@@ -13,6 +13,7 @@
 #   ANDROID_KEYSTORE_PASSWORD password keystore (store & key sama)
 #   ANDROID_KEY_ALIAS         alias key (scan_gr)
 #   RELEASE_HOOK_TOKEN        token acak; sama dengan RELEASE_HOOK_TOKEN di .env server
+#   GOOGLE_SERVICES_JSON      isi android/app/google-services.json (Firebase)
 
 name: Release APK
 
@@ -121,6 +122,13 @@ jobs:
           storeFile=$RUNNER_TEMP/release.jks
           EOF
 
+      - name: Siapkan konfigurasi Firebase
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then echo "::error::Secret GOOGLE_SERVICES_JSON belum diisi"; exit 1; fi
+          printf '%s' "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
+
       - run: flutter pub get
 
       - name: Test
@@ -175,4 +183,4 @@ jobs:
 
       - name: Bersihkan keystore
         if: always()
-        run: rm -f "$RUNNER_TEMP/release.jks" android/key.properties
+        run: rm -f "$RUNNER_TEMP/release.jks" android/key.properties android/app/google-services.json

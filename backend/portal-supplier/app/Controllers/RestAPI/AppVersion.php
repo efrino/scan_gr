@@ -175,6 +175,43 @@ class AppVersion extends ResourceController
      * Catat versi terpasang per device untuk statistik di CMS.
      * Gagal mencatat tidak boleh menggagalkan cek versi.
      */
+    /**
+     * POST /api/app/fcm-token (butuh token login)
+     * Simpan token FCM device agar CMS bisa mengirim notifikasi ke device tertentu.
+     */
+    public function fcmToken()
+    {
+        $json     = $this->request->getJSON(true) ?? [];
+        $deviceId = trim((string) ($json['device_id'] ?? ''));
+        $fcm      = trim((string) ($json['fcm_token'] ?? ''));
+        if (! preg_match('/^[A-Za-z0-9-]{8,64}$/', $deviceId) || $fcm === '' || strlen($fcm) > 255) {
+            return $this->respond(['status' => false, 'message' => 'device_id / fcm_token tidak valid.'], 422);
+        }
+
+        $user = $this->request->apiUser ?? [];
+        $now  = date('Y-m-d H:i:s');
+        $data = [
+            'fcm_token'    => $fcm,
+            'nik'          => mb_substr((string) ($user['nik_user'] ?? ''), 0, 50) ?: null,
+            'device_model' => mb_substr(trim((string) ($json['device_model'] ?? '')), 0, 100) ?: null,
+            'ip_address'   => $this->request->getIPAddress(),
+            'last_seen'    => $now,
+        ];
+
+        $db = db_connect();
+        // Token FCM yang sama tidak boleh menempel di device lain (app di-reinstall).
+        $db->table('app_devices')->where('fcm_token', $fcm)->where('device_id !=', $deviceId)->update(['fcm_token' => null]);
+        if ($db->table('app_devices')->where('device_id', $deviceId)->countAllResults() > 0) {
+            $db->table('app_devices')->where('device_id', $deviceId)->update($data);
+        } else {
+            $db->table('app_devices')->insert($data + [
+                'device_id' => $deviceId, 'platform' => 'android', 'version_code' => 0, 'first_seen' => $now,
+            ]);
+        }
+
+        return $this->respond(['status' => true, 'message' => 'Token notifikasi tersimpan.']);
+    }
+
     private function recordDevice(string $platform): void
     {
         $deviceId = trim((string) $this->request->getGet('device_id'));
