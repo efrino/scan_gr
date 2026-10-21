@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -83,4 +84,40 @@ void main() {
       expect(ApiClient.get(primary), throwsA(isA<SocketException>()));
     },
   );
+
+  group('POST tidak idempoten', () {
+    test('server utama timeout: tidak dikirim ulang ke server lokal', () async {
+      calls = [];
+      ApiClient.client = MockClient((req) async {
+        calls.add(req.url);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        return http.Response(ok, 200);
+      });
+      await expectLater(
+        ApiClient.post(
+          primary,
+          body: '{}',
+          timeout: const Duration(milliseconds: 50),
+        ),
+        throwsA(isA<TimeoutException>()),
+      );
+      expect(calls, [primary]);
+    });
+
+    test('server utama 500: tidak dikirim ulang ke server lokal', () async {
+      useServer((_) => http.Response('{"status":false}', 500));
+      final res = await ApiClient.post(primary, body: '{}');
+      expect(res.statusCode, 500);
+      expect(calls, [primary]);
+    });
+
+    test('server utama tidak terjangkau: pindah ke server lokal', () async {
+      useServer((u) {
+        if (u.host == primary.host) throw const SocketException('down');
+        return http.Response(ok, 200);
+      });
+      await ApiClient.post(primary, body: '{}');
+      expect(calls, [primary, local]);
+    });
+  });
 }

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -208,6 +209,9 @@ class _ScanPageState extends State<ScanPage> {
     );
   }
 
+  /// Lama menunggu POST sebelum dilanjutkan di latar belakang.
+  static const _handoffAfter = Duration(seconds: 12);
+
   Future<_ScanResult> submitLabelbox({
     required String barcode,
     required String nik,
@@ -223,10 +227,31 @@ class _ScanPageState extends State<ScanPage> {
       final payload = {'barcode': barcode, 'nik': nik, 'qty': qty};
       debugPrint('[ScanPage] POST scan-labelbox payload: $payload');
 
-      final response = await ApiClient.post(
+      final request = ApiClient.post(
         Uri.parse('${ApiConstants.baseUrl}/scan/scan-labelbox'),
         body: jsonEncode(payload),
-      ).timeout(const Duration(seconds: 20));
+      );
+
+      // SAP bisa lambat. Operator tidak ditahan: request tetap berjalan di latar
+      // belakang, barcode masuk antrian, dan dibersihkan saat hasilnya sukses.
+      final http.Response response;
+      try {
+        response = await request.timeout(_handoffAfter);
+      } on TimeoutException {
+        debugPrint('[ScanPage] POST > ${_handoffAfter.inSeconds}s – lanjut di latar belakang');
+        await PendingScanService.add(
+          barcode: barcode,
+          nik: nik,
+          qty: qty,
+          labelboxData: labelboxData,
+        );
+        PendingScanService.track(barcode, request);
+        return _ScanResult(
+          isSuccess: false,
+          message: 'Server lambat. Diproses di latar belakang (antrian lokal).',
+          detail: 'Latar belakang · barcode=$barcode',
+        );
+      }
 
       debugPrint('[ScanPage] POST ← ${response.statusCode}');
       debugPrint('[ScanPage]   body: ${response.body}');

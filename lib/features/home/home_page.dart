@@ -34,6 +34,8 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    PendingScanService.changes.addListener(_reloadPending);
+    PendingScanService.startAutoSync();
     _init();
     PackageInfo.fromPlatform().then((p) {
       if (!mounted) return;
@@ -47,6 +49,23 @@ class _HomePageState extends State<HomePage> {
     _nik = prefs.getString('nik') ?? prefs.getString('email') ?? '';
     await _syncPending();
     await _fetchLastSession();
+  }
+
+  @override
+  void dispose() {
+    PendingScanService.changes.removeListener(_reloadPending);
+    PendingScanService.stopAutoSync();
+    super.dispose();
+  }
+
+  /// Antrian berubah dari luar (sync otomatis / POST latar belakang selesai).
+  Future<void> _reloadPending() async {
+    final items = await PendingScanService.getAll();
+    if (!mounted) return;
+    setState(() {
+      _pendingCount = items.length;
+      _pendingItems = items;
+    });
   }
 
   // ── Sync pending scans ────────────────────────────────────────────────────

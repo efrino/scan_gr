@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api_client.dart';
 import '../../core/constants/api_constants.dart';
@@ -21,6 +22,23 @@ class PendingScanService {
   static const _key = 'pending_scans';
   static bool _syncing = false;
 
+  /// Naik tiap isi cache berubah, supaya halaman yang menampilkan antrian
+  /// ikut diperbarui saat sync berjalan di latar belakang.
+  static final ValueNotifier<int> changes = ValueNotifier(0);
+
+  /// Barcode yang POST-nya masih berjalan (mis. dilanjutkan di latar belakang
+  /// oleh ScanPage). Dilewati syncAll agar tidak terkirim dua kali.
+  static final Set<String> _inFlight = {};
+
+  static bool get isSyncing => _syncing;
+
+  /// Interval sync otomatis selama aplikasi terbuka.
+  static const autoSyncInterval = Duration(minutes: 2);
+  static Timer? _autoTimer;
+
+  /// Timeout beruntun sebelum sync berhenti; server kemungkinan sedang lambat.
+  static const _maxConsecutiveTimeouts = 2;
+
   // ── Read / Write ──────────────────────────────────────────────────────────
 
   static Future<List<Map<String, dynamic>>> getAll() async {
@@ -37,6 +55,7 @@ class PendingScanService {
   static Future<void> _save(List<Map<String, dynamic>> list) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_key, jsonEncode(list));
+    changes.value++;
   }
 
   // ── Add ───────────────────────────────────────────────────────────────────
@@ -87,6 +106,55 @@ class PendingScanService {
 
   static Future<int> count() async => (await getAll()).length;
 
+  // ── Background ────────────────────────────────────────────────────────────
+
+  /// Tandai barcode sedang dikirim di luar syncAll, lalu bersihkan cache
+  /// sesuai hasil akhirnya. Item tetap di cache jika gagal, untuk dicoba lagi.
+  static void track(String barcode, Future<http.Response> request) {
+    _inFlight.add(barcode);
+    request.then((resp) async {
+      if (isDone(resp.body)) {
+        debugPrint('[PendingScanService] latar belakang ✓ barcode=$barcode → hapus dari cache');
+        await remove(barcode);
+      } else {
+        debugPrint('[PendingScanService] latar belakang ✗ barcode=$barcode tetap di cache');
+      }
+    }).catchError((Object e) {
+      debugPrint('[PendingScanService] latar belakang ✗ barcode=$barcode: $e');
+    }).whenComplete(() => _inFlight.remove(barcode));
+  }
+
+  /// Respons POST scan-labelbox dianggap selesai jika berhasil, atau server
+  /// menolak karena sudah discan/diproses (request sebelumnya ternyata masuk).
+  static bool isDone(String body) {
+    try {
+      final data = jsonDecode(body);
+      final msg = (data['message'] as String? ?? '').toLowerCase();
+      return data['success'] == true ||
+          data['status'] == true ||
+          msg.contains('berhasil') ||
+          msg.contains('sudah discan') ||
+          msg.contains('sudah diproses');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Sync otomatis berkala selama aplikasi di depan. Aman dipanggil berulang.
+  static void startAutoSync() {
+    _autoTimer ??= Timer.periodic(autoSyncInterval, (_) async {
+      // Tanpa sesi, POST pasti 401 dan memaksa buka halaman login berulang.
+      final prefs = await SharedPreferences.getInstance();
+      if ((prefs.getString('token') ?? '').isEmpty) return;
+      if (await count() > 0) await syncAll();
+    });
+  }
+
+  static void stopAutoSync() {
+    _autoTimer?.cancel();
+    _autoTimer = null;
+  }
+
   /// Server bisa balas `data` sebagai objek tunggal maupun list berisi satu objek.
   static Map<String, dynamic>? _extractLabelboxData(dynamic raw) {
     if (raw is Map<String, dynamic>) return raw;
@@ -117,9 +185,14 @@ class PendingScanService {
       }
 
       debugPrint('[PendingScanService] syncAll – mulai sinkronisasi ${list.length} item');
+      var timeouts = 0;
 
       for (final item in List<Map<String, dynamic>>.from(list)) {
         final barcode = item['barcode'] as String? ?? '';
+        if (_inFlight.contains(barcode)) {
+          debugPrint('[PendingScanService] sync item barcode=$barcode masih dikirim, lewati');
+          continue;
+        }
         final nik = item['nik'] as String? ?? '';
         String qty = item['qty'] as String? ?? '';
         final hasLabelboxData = item['has_labelbox_data'] == true;
@@ -165,19 +238,10 @@ class PendingScanService {
           debugPrint('[PendingScanService]   POST ← ${postResp.statusCode}');
           debugPrint('[PendingScanService]   body: ${postResp.body}');
 
-          final data = jsonDecode(postResp.body);
-          final msg = (data['message'] as String? ?? '').toLowerCase();
-          final ok = data['success'] == true ||
-              data['status'] == true ||
-              msg.contains('berhasil');
-          // Barcode ini bisa saja sudah kekirim di percobaan sebelumnya (mis. request
-          // sempat timeout di client padahal sudah diproses server) — server menolak
-          // via pesan "sudah discan/diproses". Ini bukan error yang perlu diulang,
-          // jadi tetap dianggap selesai dan dibuang dari cache.
-          final alreadyProcessed =
-              msg.contains('sudah discan') || msg.contains('sudah diproses');
-
-          if (ok || alreadyProcessed) {
+          timeouts = 0;
+          // Termasuk balasan "sudah discan/diproses": request sebelumnya ternyata
+          // sudah masuk server, jadi bukan error yang perlu diulang.
+          if (isDone(postResp.body)) {
             debugPrint('[PendingScanService]   ✓ berhasil/duplikat sync barcode=$barcode → hapus dari cache');
             await remove(barcode);
             synced++;
@@ -192,8 +256,14 @@ class PendingScanService {
           debugPrint('[PendingScanService] ✗ SocketException – offline, berhenti sync: $e');
           break; // Masih offline — hentikan loop
         } on TimeoutException catch (e) {
-          debugPrint('[PendingScanService] ✗ Timeout – berhenti sync: $e');
-          break;
+          // POST tidak diulang otomatis; item tetap di cache. Percobaan berikutnya
+          // dibalas "sudah discan" jika ternyata sudah diproses server.
+          timeouts++;
+          debugPrint('[PendingScanService] ✗ Timeout barcode=$barcode ($timeouts beruntun): $e');
+          if (timeouts >= _maxConsecutiveTimeouts) {
+            debugPrint('[PendingScanService] server lambat – berhenti sync, lanjut nanti');
+            break;
+          }
         } catch (e) {
           debugPrint('[PendingScanService] ✗ Error item barcode=$barcode (lanjut item berikutnya): $e');
           // Error tidak terduga untuk item ini — lewati, lanjut item berikutnya

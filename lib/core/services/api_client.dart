@@ -116,13 +116,24 @@ class ApiClient {
 
   // ── POST ──────────────────────────────────────────────────────────────────
 
-  static Future<http.Response> post(Uri uri, {Object? body}) async {
+  /// POST tidak idempoten: jika server utama timeout atau 5xx, request bisa saja
+  /// sudah diproses (mis. GR ke SAP), jadi tidak diulang ke server lokal.
+  /// Pindah ke server lokal hanya jika server utama tidak terjangkau.
+  /// [timeout] untuk endpoint lambat seperti scan-labelbox yang menunggu SAP.
+  static Future<http.Response> post(
+    Uri uri, {
+    Object? body,
+    Duration timeout = postTimeout,
+  }) async {
     final token = await _token();
     debugPrint('[ApiClient]   body: $body');
     final response = await _withFallback(
       'POST',
       uri,
       (u) => _client.post(u, headers: _headers(token), body: body),
+      idempotent: false,
+      primaryTimeout: timeout,
+      fallbackTimeout: timeout,
     );
 
     if (response.statusCode == 401) {
@@ -143,6 +154,9 @@ class ApiClient {
   static const _primaryTimeout = Duration(seconds: 6);
   static const _fallbackTimeout = Duration(seconds: 8);
 
+  /// Batas waktu POST bawaan. Endpoint yang menunggu SAP bisa lebih dari 10 detik.
+  static const postTimeout = Duration(seconds: 45);
+
   /// Setelah server utama gagal, request berikutnya langsung ke server lokal
   /// selama durasi ini. Tanpa ini, tiap request (termasuk tiap item antrian)
   /// harus menunggu timeout server utama dulu.
@@ -150,12 +164,16 @@ class ApiClient {
   static DateTime? _primaryDownUntil;
 
   /// Kirim ke server utama dulu. Jika gagal jaringan, timeout, atau 5xx,
-  /// ulangi request yang sama ke server lokal.
+  /// ulangi request yang sama ke server lokal. Untuk request tidak idempoten
+  /// hanya gagal jaringan yang diulang; timeout dan 5xx dikembalikan ke pemanggil.
   static Future<http.Response> _withFallback(
     String method,
     Uri uri,
-    Future<http.Response> Function(Uri) send,
-  ) async {
+    Future<http.Response> Function(Uri) send, {
+    bool idempotent = true,
+    Duration primaryTimeout = _primaryTimeout,
+    Duration fallbackTimeout = _fallbackTimeout,
+  }) async {
     final fallbackUri = _toFallback(uri);
     final skipPrimary =
         fallbackUri != null &&
@@ -165,9 +183,9 @@ class ApiClient {
     if (!skipPrimary) {
       try {
         debugPrint('[ApiClient] $method → $uri');
-        final response = await send(uri).timeout(_primaryTimeout);
+        final response = await send(uri).timeout(primaryTimeout);
         _logResponse(response, uri);
-        if (response.statusCode < 500 || fallbackUri == null) {
+        if (response.statusCode < 500 || fallbackUri == null || !idempotent) {
           _primaryDownUntil = null;
           return response;
         }
@@ -180,7 +198,7 @@ class ApiClient {
           '[ApiClient] ⚠ server utama tidak terjangkau ($e), coba server lokal',
         );
       } on TimeoutException {
-        if (fallbackUri == null) rethrow;
+        if (fallbackUri == null || !idempotent) rethrow;
         debugPrint('[ApiClient] ⚠ server utama timeout, coba server lokal');
       } on http.ClientException catch (e) {
         if (fallbackUri == null) rethrow;
@@ -190,7 +208,7 @@ class ApiClient {
     }
 
     debugPrint('[ApiClient] $method (lokal) → $fallbackUri');
-    final response = await send(fallbackUri).timeout(_fallbackTimeout);
+    final response = await send(fallbackUri).timeout(fallbackTimeout);
     _logResponse(response, fallbackUri);
     return response;
   }
