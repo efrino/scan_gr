@@ -26,14 +26,47 @@ class AppRelease extends BaseController
         date_default_timezone_set('Asia/Jakarta');
     }
 
-    /** Hanya grup admin. Mengembalikan response jika ditolak. */
-    private function guard()
+    /*
+     * Hak akses lewat menu Authorization → Set Permission, baris "Rilis & Versi"
+     * (admin selalu boleh, sama seperti menu lain):
+     *   View   Module.View.AppRelease    lihat halaman, statistik, QR & link unduh
+     *   Create Module.Create.AppRelease  rilis APK baru
+     *   Update Module.Update.AppRelease  ubah versi minimum, aktifkan versi, kirim WhatsApp
+     *   Delete Module.Delete.AppRelease  nonaktifkan versi, tautkan/putuskan nomor cadangan
+     */
+    private const PERM = 'AppRelease';
+
+    private function can(string $action): bool
+    {
+        return $this->userHasPermission("Module.{$action}." . self::PERM);
+    }
+
+    /** Halaman/form biasa. Mengembalikan response jika ditolak. */
+    private function guard(string $action = 'View')
     {
         if (! $this->ionAuth->loggedIn()) {
             return redirect()->to(base_url('auth/login'));
         }
-        if (! $this->ionAuth->isAdmin()) {
+        if (! $this->can($action)) {
+            if ($action !== 'View' && $this->can('View')) {
+                return $this->back('error', 'Anda tidak punya izin untuk tindakan ini. Minta admin menambahkan izin '
+                    . "\"{$action}\" pada menu Rilis & Versi.");
+            }
+
             return $this->response->setStatusCode(403)->setBody(view('template/error_403'));
+        }
+
+        return null;
+    }
+
+    /** Endpoint AJAX (JSON). Mengembalikan response jika ditolak. */
+    private function guardJson(string $action)
+    {
+        if (! $this->ionAuth->loggedIn()) {
+            return $this->response->setStatusCode(403)->setJSON(['ok' => false, 'error' => 'Sesi habis. Muat ulang halaman.']);
+        }
+        if (! $this->can($action)) {
+            return $this->response->setStatusCode(403)->setJSON(['ok' => false, 'error' => "Tidak punya izin {$action} untuk menu Rilis & Versi."]);
         }
 
         return null;
@@ -86,6 +119,11 @@ class AppRelease extends BaseController
             'githubReady'   => (new GithubRelease())->isConfigured(),
             'downloadUrl'   => base_url('app/download'),
             'fonnteReady'   => env('FONNTE_TOKEN', '') !== '',
+            'can'           => [
+                'create' => $this->can('Create'),
+                'update' => $this->can('Update'),
+                'delete' => $this->can('Delete'),
+            ],
         ];
 
         return $this->_render_page('app_release/index', $data);
@@ -94,7 +132,7 @@ class AppRelease extends BaseController
     /** Unggah APK baru: baca versi dari APK, simpan, rilis ke GitHub, daftarkan. */
     public function store()
     {
-        if ($denied = $this->guard()) {
+        if ($denied = $this->guard('Create')) {
             return $denied;
         }
 
@@ -217,7 +255,7 @@ class AppRelease extends BaseController
     /** Ubah versi minimum (wajib update) pada satu versi. */
     public function setMin(int $id)
     {
-        if ($denied = $this->guard()) {
+        if ($denied = $this->guard('Update')) {
             return $denied;
         }
 
@@ -243,7 +281,7 @@ class AppRelease extends BaseController
     /** Aktif/nonaktifkan versi. Versi aktif tertinggi adalah production. */
     public function toggle(int $id)
     {
-        if ($denied = $this->guard()) {
+        if ($denied = $this->guard('View')) {
             return $denied;
         }
 
@@ -254,6 +292,10 @@ class AppRelease extends BaseController
         }
 
         $active = (int) $row->is_active === 1 ? 0 : 1;
+        // Mengaktifkan = Update, menonaktifkan = Delete.
+        if ($denied = $this->guard($active ? 'Update' : 'Delete')) {
+            return $denied;
+        }
         $db->table('app_versions')->where('id', $id)->update(['is_active' => $active]);
 
         return $this->back('success', "Versi {$row->version_name} " . ($active ? 'diaktifkan.' : 'dinonaktifkan.'));
@@ -264,7 +306,7 @@ class AppRelease extends BaseController
     /** QR Code link unduh tetap (app/download). ?download=1 untuk unduh PNG. */
     public function qr()
     {
-        if ($denied = $this->guard()) {
+        if ($denied = $this->guard('View')) {
             return $denied;
         }
 
@@ -314,8 +356,8 @@ class AppRelease extends BaseController
     /** Status pengirim + QR pairing (data URI PNG) untuk dipoll halaman CMS. */
     public function waStatus()
     {
-        if (! $this->ionAuth->loggedIn() || ! $this->ionAuth->isAdmin()) {
-            return $this->response->setStatusCode(403)->setJSON(['ok' => false, 'error' => 'Sesi habis. Muat ulang halaman.']);
+        if ($denied = $this->guardJson('View')) {
+            return $denied;
         }
 
         [, $s] = $this->gateway('GET', '/status');
@@ -326,7 +368,8 @@ class AppRelease extends BaseController
             'error' => $s['error'] ?? null,
             'qr'    => null,
         ];
-        if (! empty($s['qr'])) {
+        // QR penautan memberi kendali nomor pengirim: hanya untuk izin Delete.
+        if (! empty($s['qr']) && $this->can('Delete')) {
             $qr        = \Endroid\QrCode\QrCode::create($s['qr'])->setSize(320)->setMargin(12);
             $out['qr'] = (new \Endroid\QrCode\Writer\PngWriter())->write($qr)->getDataUri();
         }
@@ -337,8 +380,8 @@ class AppRelease extends BaseController
     /** Putuskan WhatsApp pengirim (untuk ganti nomor). */
     public function waLogout()
     {
-        if (! $this->ionAuth->loggedIn() || ! $this->ionAuth->isAdmin()) {
-            return $this->response->setStatusCode(403)->setJSON(['ok' => false, 'error' => 'Sesi habis. Muat ulang halaman.']);
+        if ($denied = $this->guardJson('Delete')) {
+            return $denied;
         }
         [, $res] = $this->gateway('POST', '/logout', []);
 
@@ -351,8 +394,8 @@ class AppRelease extends BaseController
      */
     public function waSendOne()
     {
-        if (! $this->ionAuth->loggedIn() || ! $this->ionAuth->isAdmin()) {
-            return $this->response->setStatusCode(403)->setJSON(['ok' => false, 'error' => 'Sesi habis. Muat ulang halaman.']);
+        if ($denied = $this->guardJson('Update')) {
+            return $denied;
         }
 
         $message = trim((string) $this->request->getPost('message'));
@@ -456,9 +499,8 @@ class AppRelease extends BaseController
     /** Terima satu potongan APK. Dipanggil berurutan oleh JS di halaman CMS. */
     public function chunk()
     {
-        if (! $this->ionAuth->loggedIn() || ! $this->ionAuth->isAdmin()) {
-            return $this->response->setStatusCode(403)
-                ->setJSON(['ok' => false, 'message' => 'Sesi habis atau bukan admin. Muat ulang halaman.']);
+        if ($denied = $this->guardJson('Create')) {
+            return $denied;
         }
 
         $id    = (string) $this->request->getPost('upload_id');

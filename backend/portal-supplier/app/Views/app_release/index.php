@@ -67,6 +67,13 @@ $label = static fn (int $code) => isset($nameByCode[$code])
       <div class="col-lg-5">
         <div class="card card-primary card-outline">
           <div class="card-header"><h3 class="card-title">Rilis versi baru</h3></div>
+          <?php if (! $can['create']): ?>
+          <div class="card-body text-muted small">
+            <i class="fas fa-lock"></i> Anda tidak punya izin merilis versi baru.
+            Minta admin menambahkan izin <strong>Create</strong> pada menu <strong>Rilis &amp; Versi</strong>
+            (Authorization → Set Permission).
+          </div>
+          <?php else: ?>
           <form action="<?= base_url('app-release/store') ?>" method="post" id="release-form"
                 data-chunk-url="<?= base_url('app-release/chunk') ?>">
             <?= csrf_field() ?>
@@ -118,6 +125,7 @@ $label = static fn (int $code) => isset($nameByCode[$code])
               </button>
             </div>
           </form>
+          <?php endif ?>
         </div>
       </div>
 
@@ -213,6 +221,7 @@ $label = static fn (int $code) => isset($nameByCode[$code])
 
             <!-- Pengirim WhatsApp (wa-gateway) -->
             <div class="border rounded p-2 mb-3" id="wa-sender" data-fonnte="<?= $fonnteReady ? '1' : '0' ?>"
+                 data-can-send="<?= $can['update'] ? '1' : '0' ?>" data-can-link="<?= $can['delete'] ? '1' : '0' ?>"
                  data-status-url="<?= base_url('app-release/wa-status') ?>"
                  data-logout-url="<?= base_url('app-release/wa-logout') ?>"
                  data-send-url="<?= base_url('app-release/wa-send-one') ?>">
@@ -282,7 +291,7 @@ $label = static fn (int $code) => isset($nameByCode[$code])
                 <button type="button" class="btn btn-outline-success" id="wa_open">
                   <i class="fab fa-whatsapp"></i> Buka di WhatsApp saya
                 </button>
-                <button type="button" class="btn btn-success" id="wa_send" disabled>
+                <button type="button" class="btn btn-success" id="wa_send" disabled<?= $can['update'] ? '' : ' hidden' ?>>
                   <i class="fab fa-whatsapp"></i> Kirim otomatis
                 </button>
               </div>
@@ -328,6 +337,7 @@ $label = static fn (int $code) => isset($nameByCode[$code])
                 <form action="<?= base_url('app-release/min/' . (int) $v['id']) ?>" method="post" class="form-inline">
                   <?= csrf_field() ?>
                   <select name="min_version_code" class="form-control form-control-sm" onchange="this.form.submit()"
+                          <?= $can['update'] ? '' : 'disabled title="Butuh izin Update"' ?>
                           aria-label="Versi tertua yang boleh dipakai untuk <?= $esc($v['version_name']) ?>">
                     <?php foreach ($nameByCode as $code => $name):
                       if ($code > (int) $v['version_code']) continue; ?>
@@ -358,6 +368,7 @@ $label = static fn (int $code) => isset($nameByCode[$code])
                 <?php endif ?>
               </td>
               <td class="text-right">
+                <?php if ((int) $v['is_active'] === 1 ? $can['delete'] : $can['update']): ?>
                 <form action="<?= base_url('app-release/toggle/' . (int) $v['id']) ?>" method="post" class="d-inline"
                       onsubmit="return confirm(<?= $esc(json_encode((int) $v['is_active'] === 1
                           ? 'Nonaktifkan versi ' . $v['version_name'] . '? Device yang sudah memasang versi ini tidak akan diturunkan versinya.'
@@ -367,6 +378,7 @@ $label = static fn (int $code) => isset($nameByCode[$code])
                     <?= (int) $v['is_active'] === 1 ? 'Nonaktifkan' : 'Aktifkan' ?>
                   </button>
                 </form>
+                <?php endif ?>
               </td>
             </tr>
           <?php endforeach ?>
@@ -551,10 +563,11 @@ $label = static fn (int $code) => isset($nameByCode[$code])
     var logoutBtn = document.getElementById('wa-logout');
     var sendBtn = document.getElementById('wa_send');
     var results = document.getElementById('wa-results');
-    var csrfInput = document.querySelector('#release-form input[type=hidden][name^=csrf]');
+    var csrfInput = document.querySelector('input[type=hidden][name^=csrf]');
     var linkToggle = document.getElementById('wa-link-toggle');
     var connected = false, busy = false, timer = null, qrOpen = false;
     var fonnte = box.dataset.fonnte === '1';
+    var canSend = box.dataset.canSend === '1', canLink = box.dataset.canLink === '1';
 
     function post(url, data) {
       var fd = new FormData();
@@ -579,10 +592,10 @@ $label = static fn (int $code) => isset($nameByCode[$code])
       if (connected) qrOpen = false;
       qrBox.hidden = !(qrOpen && s.qr);
       if (s.qr && qrOpen) qrImg.src = s.qr;
-      linkToggle.hidden = connected || s.state === 'down';
+      linkToggle.hidden = !canLink || connected || s.state === 'down';
       linkToggle.textContent = qrOpen ? 'Tutup QR' : 'Tautkan nomor cadangan';
-      logoutBtn.hidden = !connected;
-      sendBtn.disabled = !(connected || fonnte) || busy;
+      logoutBtn.hidden = !canLink || !connected;
+      sendBtn.disabled = !canSend || !(connected || fonnte) || busy;
     }
 
     function poll() {
@@ -645,7 +658,7 @@ $label = static fn (int $code) => isset($nameByCode[$code])
       sum.innerHTML = '<strong>Selesai: ' + okCount + ' dari ' + nums.length + ' terkirim.</strong>';
       results.appendChild(sum);
       busy = false;
-      sendBtn.disabled = !(connected || fonnte);
+      sendBtn.disabled = !canSend || !(connected || fonnte);
     });
   })();
 
@@ -654,6 +667,7 @@ $label = static fn (int $code) => isset($nameByCode[$code])
   (function () {
     var CHUNK = 640 * 1024;
     var form = document.getElementById('release-form');
+    if (!form) return;   // tanpa izin Create: form rilis tidak ditampilkan
     var input = document.getElementById('apk');
     var btn = document.getElementById('release-submit');
     var box = document.getElementById('upload-progress');
