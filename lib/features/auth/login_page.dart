@@ -5,6 +5,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/constants/api_constants.dart';
 import '../../core/services/api_client.dart';
+import '../../core/services/app_update_service.dart';
+import '../../core/services/pending_scan_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -21,6 +23,26 @@ class _LoginPageState extends State<LoginPage> {
   bool isLoading = false;
   bool obscure = true;
   String? _errorMsg;
+
+  /// Penjelasan saat sesi berakhir dari server, termasuk antrian yang aman.
+  String? _sessionNotice;
+
+  @override
+  void initState() {
+    super.initState();
+    if (ApiClient.sessionExpired) {
+      ApiClient.sessionExpired = false;
+      PendingScanService.count().then((n) {
+        if (!mounted) return;
+        setState(() {
+          _sessionNotice = n > 0
+              ? 'Sesi berakhir, silakan login lagi. $n scan tersimpan di '
+                    'perangkat dan akan dikirim setelah login.'
+              : 'Sesi berakhir, silakan login lagi.';
+        });
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -53,7 +75,12 @@ class _LoginPageState extends State<LoginPage> {
     try {
       final response = await ApiClient.postNoAuth(
         uri,
-        body: jsonEncode({'email': email, 'password': password}),
+        body: jsonEncode({
+          'email': email,
+          'password': password,
+          // Token per device: login di sini tidak mengeluarkan device lain.
+          ...await AppUpdateService.deviceParams(),
+        }),
       );
 
       debugPrint('[Login] ← status: ${response.statusCode}');
@@ -327,6 +354,41 @@ class _LoginPageState extends State<LoginPage> {
                             ),
                           ),
                         ),
+
+                        if (_sessionNotice != null && _errorMsg == null) ...[
+                          const SizedBox(height: 20),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 12,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.orange.shade50,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.orange.shade200),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.info_outline,
+                                  color: Colors.orange.shade800,
+                                  size: 20,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    _sessionNotice!,
+                                    style: TextStyle(
+                                      color: Colors.orange.shade900,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
 
                         // Error Message
                         if (_errorMsg != null) ...[

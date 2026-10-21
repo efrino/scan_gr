@@ -136,7 +136,7 @@ class AppUpdateService {
           'platform': 'android',
           'current_version_code': '$installed',
           'current_version_name': pkg.version,
-          ...await _deviceParams(),
+          ...await deviceParams(),
         },
       );
       final res = await ApiClient.get(uri);
@@ -173,9 +173,10 @@ class AppUpdateService {
 
   static const _deviceIdKey = 'app_device_id';
 
+  /// Juga dikirim saat login agar server membuat token per device.
   /// `device_id` acak dibuat sekali lalu disimpan; ikut terhapus jika app
   /// di-uninstall. Ditambah NIK user yang login dan model device.
-  static Future<Map<String, String>> _deviceParams() async {
+  static Future<Map<String, String>> deviceParams() async {
     final params = <String, String>{};
     try {
       final prefs = await SharedPreferences.getInstance();

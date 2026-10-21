@@ -87,8 +87,13 @@ class ApiClient {
     await prefs.remove('nik');
   }
 
+  /// Diset saat sesi dicabut server (401) supaya halaman login bisa
+  /// menjelaskan alasannya. Direset oleh halaman login.
+  static bool sessionExpired = false;
+
   static void _redirectToLogin() {
     debugPrint('[ApiClient] → redirect ke /login');
+    sessionExpired = true;
     navigatorKey.currentState?.pushNamedAndRemoveUntil('/login', (_) => false);
   }
 
