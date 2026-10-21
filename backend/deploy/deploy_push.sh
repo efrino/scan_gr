@@ -33,8 +33,7 @@ if "AppRelease::pushSend" not in s:
     anchor = "    $routes->post('wa-send-one', 'AppRelease::waSendOne');\n"
     assert s.count(anchor) == 1, "anchor wa-send-one tidak ditemukan"
     s = s.replace(anchor, anchor
-        + "    $routes->post('push-send', 'AppRelease::pushSend');\n"
-        + "    $routes->post('sap-status', 'AppRelease::sapStatus');\n", 1)
+        + "    $routes->post('push-send', 'AppRelease::pushSend');\n", 1)
     print("route CMS ditambah")
 if "AppVersion::fcmToken" not in s:
     anchor = "    $routes->get('app/version', 'AppVersion::latest');\n"

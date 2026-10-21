@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'core/services/api_client.dart';
 import 'core/services/notification_service.dart';
-import 'shared/widgets/sap_status_banner.dart';
 import 'features/splash/splash_screen.dart';
 import 'features/auth/login_page.dart';
 import 'features/home/home_page.dart';
@@ -29,9 +28,9 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
       ),
-      // Cek versi & ajakan update, serta banner gangguan SAP, di atas semua halaman.
+      // Cek versi & ajakan update di atas semua halaman.
       builder: (context, child) =>
-          UpdateGate(child: SapStatusBanner(child: child!)),
+          UpdateGate(child: child!),
       initialRoute: '/',
       routes: {
         '/': (context) => const SplashScreen(),

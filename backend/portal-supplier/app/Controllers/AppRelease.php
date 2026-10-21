@@ -5,7 +5,6 @@ namespace App\Controllers;
 use App\Libraries\ApkInfo;
 use App\Libraries\Fcm;
 use App\Libraries\GithubRelease;
-use App\Libraries\SapHealth;
 use IonAuth\Libraries\IonAuth;
 
 /**
@@ -122,7 +121,6 @@ class AppRelease extends BaseController
             'downloadUrl'   => base_url('app/download'),
             'fonnteReady'   => env('FONNTE_TOKEN', '') !== '',
             'fcmReady'      => Fcm::configured(),
-            'sapDown'       => SapHealth::isDown(),
             'can'           => [
                 'create' => $this->can('Create'),
                 'update' => $this->can('Update'),
@@ -530,18 +528,6 @@ class AppRelease extends BaseController
         log_message('notice', 'Push CMS oleh ' . ($this->ionAuth->user()->row()->email ?? '?') . ' ke ' . ($token ? $target : 'semua') . ': ' . ($ok ? 'ok' : 'gagal'));
 
         return $this->response->setJSON($ok ? ['ok' => true] : ['ok' => false, 'error' => 'FCM menolak, cek log server']);
-    }
-
-    /** Tandai status SAP manual (gangguan / normal) dan kabari semua device. */
-    public function sapStatus()
-    {
-        if ($denied = $this->guardJson('Update')) {
-            return $denied;
-        }
-        $down = $this->request->getPost('state') === 'down';
-        SapHealth::setDown($down, 'CMS ' . ($this->ionAuth->user()->row()->email ?? '?'));
-
-        return $this->response->setJSON(['ok' => true, 'down' => $down]);
     }
 
     public function chunk()

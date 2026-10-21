@@ -305,21 +305,13 @@ $label = static fn (int $code) => isset($nameByCode[$code])
     <!-- Notifikasi ke operator -->
     <?php $pushDevices = array_filter($devices, static fn ($d) => ! empty($d['fcm_token'])); ?>
     <div class="card card-outline card-warning" id="push-card"
-         data-url-send="<?= site_url('app-release/push-send') ?>" data-url-sap="<?= site_url('app-release/sap-status') ?>">
+         data-url-send="<?= site_url('app-release/push-send') ?>">
       <div class="card-header"><h3 class="card-title">Notifikasi ke operator</h3></div>
       <div class="card-body">
         <?php if (! $fcmReady): ?>
           <div class="alert alert-warning mb-0">Firebase belum dipasang di server (writable/firebase-service-account.json).</div>
         <?php else: ?>
-          <div class="d-flex align-items-center flex-wrap mb-3" style="gap:8px">
-            <span>Status SAP:</span>
-            <span id="sap-badge" class="badge <?= $sapDown ? 'badge-danger' : 'badge-success' ?>"><?= $sapDown ? 'Gangguan' : 'Normal' ?></span>
-            <?php if ($can['update']): ?>
-              <button type="button" class="btn btn-sm btn-outline-danger sap-btn" data-state="down"<?= $sapDown ? ' hidden' : '' ?>>Umumkan gangguan SAP</button>
-              <button type="button" class="btn btn-sm btn-outline-success sap-btn" data-state="ok"<?= $sapDown ? '' : ' hidden' ?>>Umumkan SAP normal</button>
-            <?php endif ?>
-          </div>
-          <p class="small text-muted">Gangguan SAP juga terdeteksi otomatis (<?= \App\Libraries\SapHealth::FAIL_THRESHOLD ?> kali gagal beruntun) dan operator langsung dikabari.</p>
+          <p class="small text-muted">Pemberitahuan satu arah ke aplikasi GR Scanner. Gangguan koneksi SAP juga dikabarkan otomatis.</p>
 
           <?php if ($can['update']): ?>
           <div class="form-group">
@@ -799,19 +791,6 @@ $label = static fn (int $code) => isset($nameByCode[$code])
       Object.keys(data).forEach(function (k) { fd.append(k, data[k]); });
       return fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' }).then(function (r) { return r.json(); });
     }
-    card.querySelectorAll('.sap-btn').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        var down = btn.dataset.state === 'down';
-        if (!confirm(down ? 'Kirim notifikasi gangguan SAP ke semua device?' : 'Kirim notifikasi SAP normal ke semua device?')) return;
-        btn.disabled = true;
-        post(card.dataset.urlSap, { state: btn.dataset.state }).then(function (r) {
-          var badge = document.getElementById('sap-badge');
-          badge.className = 'badge ' + (r.down ? 'badge-danger' : 'badge-success');
-          badge.textContent = r.down ? 'Gangguan' : 'Normal';
-          card.querySelectorAll('.sap-btn').forEach(function (b) { b.hidden = (b.dataset.state === 'down') === r.down; b.disabled = false; });
-        }).catch(function () { btn.disabled = false; alert('Gagal mengubah status'); });
-      });
-    });
     var send = document.getElementById('push_send');
     if (!send) return;
     var out = document.getElementById('push_result');

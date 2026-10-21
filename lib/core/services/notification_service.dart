@@ -19,8 +19,7 @@ Future<void> firebaseBackgroundHandler(RemoteMessage message) async {}
 ///
 /// - Semua device berlangganan topik [topic], untuk siaran ke seluruh operator.
 /// - Token FCM dikirim ke server per device, untuk notifikasi ke device tertentu.
-/// - Pesan dengan data `type = sap_status` juga memperbarui [sapStatus] supaya
-///   banner di app ikut berubah.
+/// - Pemberitahuan satu arah: app hanya menampilkan notifikasi, tanpa status.
 class NotificationService {
   NotificationService._();
 
@@ -34,10 +33,6 @@ class NotificationService {
 
   static final _local = FlutterLocalNotificationsPlugin();
   static bool _ready = false;
-
-  /// Pesan gangguan SAP yang sedang berlaku, atau null jika normal.
-  /// Diisi dari push maupun header `X-System-Status` di respons API.
-  static final ValueNotifier<String?> sapStatus = ValueNotifier(null);
 
   static Future<void> init() async {
     if (_ready) return;
@@ -60,7 +55,6 @@ class NotificationService {
       final fcm = FirebaseMessaging.instance;
       await fcm.subscribeToTopic(topic);
       FirebaseMessaging.onMessage.listen(_onForeground);
-      FirebaseMessaging.onMessageOpenedApp.listen(_applyData);
       // Token registrasi klasik dipakai karena server mengirim lewat FCM HTTP v1
       // `message.token`; API register()/FID belum diperlukan.
       // ignore: deprecated_member_use
@@ -70,7 +64,7 @@ class NotificationService {
       debugPrint('[Notif] siap, topik=$topic');
       await registerToken();
     } catch (e) {
-      // Tanpa push, app tetap jalan; banner status masih dari header API.
+      // Tanpa push, app tetap jalan normal.
       debugPrint('[Notif] gagal inisialisasi: $e');
     }
   }
@@ -78,7 +72,6 @@ class NotificationService {
   /// App di depan: sistem tidak menampilkan notifikasi FCM, jadi tampilkan
   /// sendiri lewat notifikasi lokal.
   static Future<void> _onForeground(RemoteMessage m) async {
-    _applyData(m);
     final n = m.notification;
     if (n == null) return;
     await _local.show(
@@ -95,20 +88,6 @@ class NotificationService {
         ),
       ),
     );
-  }
-
-  static void _applyData(RemoteMessage m) {
-    if (m.data['type'] != 'sap_status') return;
-    applySapStatus(m.data['state'], m.data['message']);
-  }
-
-  /// [state] `down` menampilkan banner dengan [message]; selain itu menghapusnya.
-  static void applySapStatus(String? state, String? message) {
-    sapStatus.value = state == 'down'
-        ? (message?.isNotEmpty == true
-              ? message
-              : 'Server SAP sedang gangguan. Scan tetap tersimpan dan dikirim otomatis.')
-        : null;
   }
 
   /// Kirim token FCM ke server agar device ini bisa dikirimi notifikasi
