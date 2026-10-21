@@ -68,8 +68,30 @@ class ApiTokenFilter implements FilterInterface
         $request->apiUser = $user;
     }
 
+    /**
+     * Sisipkan build GR Scanner terbaru di setiap respons API, supaya app tahu
+     * ada update tanpa menunggu jadwal cek versi. Di-cache 60 detik.
+     */
     public function after(RequestInterface $request, ResponseInterface $response, $arguments = null)
     {
-        //
+        $latest = cache('app_latest_build_android');
+        if ($latest === null) {
+            try {
+                $row = db_connect()->table('app_versions')
+                    ->select('version_code')
+                    ->where('platform', 'android')
+                    ->where('is_active', 1)
+                    ->orderBy('version_code', 'DESC')
+                    ->get(1)->getRowArray();
+                $latest = (int) ($row['version_code'] ?? 0);
+                cache()->save('app_latest_build_android', $latest, 60);
+            } catch (\Throwable $e) {
+                return $response;
+            }
+        }
+        if ($latest > 0) {
+            $response->setHeader('X-App-Latest-Build', (string) $latest);
+        }
+        return $response;
     }
 }

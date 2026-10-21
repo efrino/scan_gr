@@ -113,8 +113,9 @@ class AppUpdateService {
   AppUpdateService._();
 
   /// Jeda cek otomatis: cek berkala selama app terbuka, dan jeda minimum
-  /// antar cek saat resume. Update wajib sampai paling lambat selama ini.
-  static const checkInterval = Duration(minutes: 15);
+  /// antar cek saat resume. Cadangan untuk header `X-App-Latest-Build` yang
+  /// memicu cek seketika setiap ada request API.
+  static const checkInterval = Duration(minutes: 5);
 
   static DateTime? _lastCheck;
 

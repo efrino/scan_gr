@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import '../../core/services/api_client.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../core/services/app_update_service.dart';
 import '../../core/services/pending_scan_service.dart';
@@ -42,6 +44,7 @@ class _UpdateGateState extends State<UpdateGate> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    ApiClient.latestBuild.addListener(_onServerBuild);
     _check(ignoreInterval: true);
     _startTimer();
   }
@@ -49,8 +52,21 @@ class _UpdateGateState extends State<UpdateGate> with WidgetsBindingObserver {
   @override
   void dispose() {
     _timer?.cancel();
+    ApiClient.latestBuild.removeListener(_onServerBuild);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  /// Server mengumumkan build lebih baru di respons API: cek sekarang juga,
+  /// tanpa menunggu jadwal berkala.
+  Future<void> _onServerBuild() async {
+    final pkg = await PackageInfo.fromPlatform();
+    final installed = int.tryParse(pkg.buildNumber) ?? 0;
+    if (ApiClient.latestBuild.value <= installed) return;
+    if (_phase == _Phase.downloading) return;
+    final shown = _result?.latest?.versionCode;
+    if (shown != null && shown >= ApiClient.latestBuild.value) return;
+    _check(ignoreInterval: true);
   }
 
   void _startTimer() {

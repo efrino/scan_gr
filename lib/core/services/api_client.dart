@@ -228,9 +228,15 @@ class ApiClient {
     );
   }
 
+  /// Build terbaru yang diumumkan server lewat header `X-App-Latest-Build`
+  /// di setiap respons API. UpdateGate memantau ini untuk cek update seketika.
+  static final ValueNotifier<int> latestBuild = ValueNotifier(0);
+
   static void _logResponse(http.Response response, Uri uri) {
     debugPrint('[ApiClient] ← ${response.statusCode} | ${uri.host}${uri.path}');
     debugPrint('[ApiClient]   body: ${response.body}');
+    final build = int.tryParse(response.headers['x-app-latest-build'] ?? '');
+    if (build != null && build > latestBuild.value) latestBuild.value = build;
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
