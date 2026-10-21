@@ -311,7 +311,7 @@ $label = static fn (int $code) => isset($nameByCode[$code])
         <?php if (! $fcmReady): ?>
           <div class="alert alert-warning mb-0">Firebase belum dipasang di server (writable/firebase-service-account.json).</div>
         <?php else: ?>
-          <p class="small text-muted">Pemberitahuan satu arah ke aplikasi GR Scanner. Gangguan koneksi SAP juga dikabarkan otomatis.</p>
+          <p class="small text-muted">Pemberitahuan satu arah ke aplikasi GR Scanner, mis. jadwal maintenance atau gangguan SAP.</p>
 
           <?php if ($can['update']): ?>
           <div class="form-group">

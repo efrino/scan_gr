@@ -17,7 +17,6 @@ supaya perubahan ini tidak tertimpa.
 | `app/Libraries/GithubRelease.php` | Rilis ke GitHub |
 | `app/Libraries/ApiTokens.php` | Token login API per device |
 | `app/Libraries/Fcm.php` | Kirim push notification Firebase |
-| `app/Libraries/SapHealth.php` | Deteksi gangguan SAP |
 | `app/Views/app_release/index.php` | Tampilan CMS Rilis & Versi |
 | `app/Views/app_release/download.php` | Tampilan halaman unduh |
 | `app/Database/Migrations/2026-10-20-162600_CreateAppVersions.php` | Tabel `app_versions` |
@@ -37,7 +36,9 @@ supaya perubahan ini tidak tertimpa.
 | `app/Config/Menu.php` | Tambah menu "Rilis & Versi" (permission `Module.View.AppRelease`) |
 | `app/Filters/ApiTokenFilter.php` | Cek token per device (tabel `api_tokens`) dengan fallback ke `users.api_token`; `after()` menambah header `X-App-Latest-Build` dan `X-System-Status` |
 | `app/Controllers/RestAPI/AuthController.php` | Login membuat token per device (`device_id`), masa berlaku 30 hari bergeser; logout hanya mencabut token device itu; perbaikan error 500 saat body kosong |
-| `app/Models/M_curl.php` | `execute()` dan `execute_array()` mencatat durasi dan hasil ke `SapHealth::observe()` (3 baris tambahan per method) |
+
+`app/Models/M_curl.php` sempat diubah lalu **dikembalikan persis seperti
+semula** (21 Oktober 2026, 17:02); tidak perlu digabung.
 
 ## C. Konfigurasi dan file non-kode
 
@@ -57,6 +58,7 @@ Di `/var/www/backup/`:
 - `portal-supplier-token-20261021-135023`
 - `portal-supplier-push-20261021-144111`
 - `portal-supplier-nostatus-20261021-152440`
+- `portal-supplier-nosaphealth-20261021-170212`
 
 ## E. Cara aman sebelum tim lain deploy
 

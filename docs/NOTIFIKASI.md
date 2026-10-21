@@ -1,16 +1,16 @@
 # Push Notification (Firebase)
 
 GR Scanner memakai Firebase Cloud Messaging (FCM) untuk pemberitahuan **satu
-arah** ke operator: gangguan server SAP dan pengumuman dari admin. Aplikasi
-hanya menampilkan notifikasi; tidak ada status atau balasan.
+arah** dari admin ke operator, misalnya jadwal maintenance atau gangguan SAP.
+Semua notifikasi dikirim manual dari CMS; tidak ada notifikasi otomatis.
+Aplikasi hanya menampilkan notifikasi; tidak ada status atau balasan.
 
 ## Gambaran sistem
 
 ```
                  ┌──────────── Server 55 (portal-supplier) ────────────┐
- CMS admin ──────► AppRelease::pushSend ─┐                               │
-                 │                       ├─► Fcm::send ──────────────────┼──► Firebase (FCM)
- Panggilan SAP ──► M_curl → SapHealth ───┘     (OAuth2 service account)  │        │
+ CMS admin ──────► AppRelease::pushSend ──► Fcm::send ───────────────────┼──► Firebase (FCM)
+                 │                            (OAuth2 service account)   │        │
                  └────────────────────────────────────────────────────────┘        │
                                                                                     ▼
                                                      Device GR Scanner (topik "gr-scanner"
@@ -22,9 +22,7 @@ hanya menampilkan notifikasi; tidak ada status atau balasan.
 - Topik: `gr-scanner` (semua device berlangganan otomatis)
 - Channel Android: `gr_info` ("Info GR Scanner", prioritas tinggi)
 
-## Sumber notifikasi
-
-### 1. Pengumuman manual dari CMS
+## Mengirim notifikasi
 
 CMS **Rilis & Versi** → kartu **Notifikasi ke operator**. Butuh izin **Update**
 pada menu ini (Set Permission).
@@ -34,26 +32,9 @@ pada menu ini (Set Permission).
 - **Judul** maksimal 100 karakter, **Isi** maksimal 500 karakter.
 - Setiap pengiriman dicatat di log server (`Push CMS oleh <email> ...`).
 
-### 2. Gangguan SAP otomatis
-
-Setiap pemanggilan SAP lewat `M_curl::execute()` / `execute_array()` dicatat
-oleh `SapHealth::observe()`:
-
-| Kejadian | Dihitung gagal? |
-|---|---|
-| Balasan berisi "Could not open connection", "connection refused", "timed out", "RFC_COMMUNICATION", "partner not reached" | Ya |
-| Balasan bukan JSON / kosong | Ya |
-| Pemanggilan lebih dari 30 detik | Ya |
-| Penolakan bisnis SAP (mis. "sudah discan") | Tidak, SAP hidup |
-
-- **3 kali gagal beruntun** → satu push "SAP sedang gangguan" ke semua device.
-- **Pemanggilan berhasil berikutnya** → satu push "SAP normal kembali".
-- Tidak ada push berulang selama gangguan masih berlangsung.
-- Penanda gangguan disimpan di cache server dan hilang sendiri setelah 6 jam
-  tanpa pemanggilan SAP.
-
-Konstanta bisa diubah di `app/Libraries/SapHealth.php` (`FAIL_THRESHOLD`,
-`SLOW_SECONDS`, `MSG_DOWN`, `MSG_UP`).
+Notifikasi gangguan SAP otomatis sempat dibuat lalu dihapus (21 Oktober 2026)
+karena terlalu sering muncul saat SAP naik-turun. `M_curl.php` sudah kembali
+seperti semula.
 
 ## Sisi aplikasi
 
@@ -76,7 +57,6 @@ Aplikasi → GR Scanner → Notifikasi.
 | Komponen | File |
 |---|---|
 | Kirim ke FCM HTTP v1 | `app/Libraries/Fcm.php` |
-| Deteksi gangguan SAP | `app/Libraries/SapHealth.php` (dipanggil dari `app/Models/M_curl.php`) |
 | Simpan token device | `AppVersion::fcmToken`, route `POST api/app/fcm-token` (filter `apitoken`) |
 | Kirim dari CMS | `AppRelease::pushSend`, route `POST app-release/push-send` |
 | Tabel | `app_devices.fcm_token` |
@@ -118,7 +98,6 @@ Tidak perlu rilis ulang aplikasi.
 | CMS: "FCM menolak, cek log server" | Log `writable/logs/log-<tanggal>.log`, cari `FCM:`. |
 | Device tidak ada di pilihan "Kirim ke" | Device belum login di app 1.0.8+, atau token gagal terdaftar (logcat: `[Notif]`). |
 | Notifikasi tidak muncul di device | Izin notifikasi ditolak, mode hemat baterai, atau app versi lama (sebelum 1.0.8). |
-| Notifikasi gangguan SAP tidak terkirim | SAP menggantung tanpa batas waktu (`CURLOPT_TIMEOUT = 0` di `M_curl`); `SapHealth` baru mencatat setelah pemanggilan selesai. |
 
 Cek log device lewat adb:
 
